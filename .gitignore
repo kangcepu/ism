@@ -25,3 +25,5 @@ backups/
 *.pfx
 *.tsbuildinfo
 .impeccable/hook.cache.json
+*.[mM][dD]
+!/README.md
