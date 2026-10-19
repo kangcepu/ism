@@ -1,0 +1,1253 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  admin
+  user
+}
+
+enum GaRole {
+  none
+  staff
+  supervisor
+}
+
+enum GaAreaType {
+  building
+  floor
+  zone
+  area
+  point
+}
+
+enum GaAreaStatus {
+  DRAFT
+  REVIEW
+  ACTIVE
+  REVISED
+  RETIRED
+}
+
+enum GaWorkStatus {
+  DRAFT
+  SUBMITTED
+  VERIFIED
+  REWORK
+  OVERDUE
+}
+
+enum GaPlanStatus {
+  DRAFT
+  PROPOSED
+  APPROVED
+  RELEASED
+  CANCELLED
+}
+
+enum GaPreventiveJobStatus {
+  RELEASED
+  STARTED
+  SUBMITTED
+  VERIFIED
+  REWORK
+  OVERDUE
+  CLOSED
+}
+
+enum GaCctvOfflineStatus {
+  DETECTED
+  VALIDATED
+  IT_ESCALATED
+  IN_REPAIR
+  RECOVERED
+  VERIFIED
+}
+
+enum GaOutdoorMediaType {
+  PHOTO
+  VIDEO
+}
+
+enum AssetStatus {
+  available
+  in_use
+  maintenance
+  retired
+  disposed
+}
+
+enum ConditionGrade {
+  new
+  good
+  fair
+  poor
+  broken
+}
+
+enum MonitorStatus {
+  online
+  degraded
+  offline
+  unknown
+}
+
+enum AssignmentSource {
+  local
+  hr
+}
+
+enum ReportStatus {
+  OPEN
+  ON_PROGRESS
+  DONE
+}
+
+enum FloorAccess {
+  none
+  view
+  edit
+}
+
+enum InventoryLedgerType {
+  RECEIPT
+  RESERVE
+  RELEASE
+  ISSUE
+  TRANSFER_OUT
+  TRANSFER_IN
+  RETURN
+  ADJUSTMENT
+  COUNT
+  HOLD_RELEASE
+}
+
+model InventoryItem {
+  id            Int                @id @default(autoincrement())
+  code          String             @unique
+  name          String
+  uom           String             @default("PCS")
+  stockType     String             @default("CONSUMABLE")
+  serialControl Boolean            @default(false)
+  assetId       Int?               @unique
+  asset         Asset?             @relation(fields: [assetId], references: [id])
+  reorderLevel  Int                @default(0)
+  active        Boolean            @default(true)
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  balances      InventoryBalance[]
+  ledger        InventoryLedger[]
+  reservations  InventoryReservation[]
+  returns       InventoryReturn[]
+  purchaseProposals InventoryPurchaseProposal[]
+  purchaseOrders InventoryPurchaseOrder[]
+  receipts InventoryReceipt[]
+  stockReviews InventoryStockReview[]
+}
+
+model InventoryBin {
+  id        Int                @id @default(autoincrement())
+  code      String             @unique
+  name      String
+  warehouse String
+  site      String?
+  zone      String?
+  rack      String?
+  level     String?
+  capacity  Int?
+  active    Boolean            @default(true)
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+  balances  InventoryBalance[]
+  ledger    InventoryLedger[]
+  reservations InventoryReservation[]
+  returns   InventoryReturn[]
+  receipts  InventoryReceipt[]
+  stockReviews InventoryStockReview[]
+}
+
+model InventoryBalance {
+  id        Int           @id @default(autoincrement())
+  itemId    Int
+  item      InventoryItem @relation(fields: [itemId], references: [id])
+  binId     Int
+  bin       InventoryBin  @relation(fields: [binId], references: [id])
+  onHand    Int           @default(0)
+  reserved  Int           @default(0)
+  hold      Int           @default(0)
+  updatedAt DateTime      @updatedAt
+
+  @@unique([itemId, binId])
+}
+
+model InventoryLedger {
+  id            BigInt              @id @default(autoincrement())
+  reference     String              @unique
+  itemId        Int
+  item          InventoryItem       @relation(fields: [itemId], references: [id])
+  binId         Int
+  bin           InventoryBin        @relation(fields: [binId], references: [id])
+  type          InventoryLedgerType
+  qty           Int
+  reservedDelta Int                 @default(0)
+  holdDelta     Int                 @default(0)
+  legacy        Boolean             @default(false)
+  actorId       Int
+  reservationId Int?
+  reservation   InventoryReservation? @relation(fields: [reservationId], references: [id], onDelete: Restrict)
+  sourceReturns InventoryReturn[] @relation("ReturnSource")
+  resultReturn InventoryReturn? @relation("ReturnResult")
+  receipt InventoryReceipt? @relation("ReceiptResult")
+  holdReleases InventoryHoldRelease[] @relation("HoldSource")
+  holdReleaseResult InventoryHoldRelease? @relation("HoldResult")
+  stockReview InventoryStockReview? @relation("StockReviewResult")
+  note          String?
+  createdAt     DateTime            @default(now())
+
+  @@index([itemId, binId, createdAt])
+}
+
+model InventoryReservation {
+  id          Int               @id @default(autoincrement())
+  code        String            @unique
+  itemId      Int
+  item        InventoryItem     @relation(fields: [itemId], references: [id])
+  binId       Int
+  bin         InventoryBin      @relation(fields: [binId], references: [id])
+  quantity    Int
+  remaining   Int
+  status      String            @default("RESERVED")
+  requestedBy Int
+  note        String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  ledger      InventoryLedger[]
+
+  @@index([itemId, binId, status])
+}
+
+model InventoryReturn {
+  id         Int             @id @default(autoincrement())
+  code       String          @unique
+  issueId    BigInt
+  issue      InventoryLedger @relation("ReturnSource", fields: [issueId], references: [id], onDelete: Restrict)
+  resultId   BigInt?         @unique
+  result     InventoryLedger? @relation("ReturnResult", fields: [resultId], references: [id], onDelete: Restrict)
+  itemId     Int
+  item       InventoryItem   @relation(fields: [itemId], references: [id])
+  binId      Int
+  bin        InventoryBin    @relation(fields: [binId], references: [id])
+  quantity   Int
+  disposition String
+  status     String          @default("REQUESTED")
+  note       String
+  requestedBy Int
+  approvedBy Int?
+  createdAt  DateTime        @default(now())
+  approvedAt DateTime?
+
+  @@index([issueId, status])
+}
+
+model InventoryReceipt {
+  id           Int              @id @default(autoincrement())
+  code         String           @unique
+  itemId       Int
+  item         InventoryItem    @relation(fields: [itemId], references: [id])
+  binId        Int
+  bin          InventoryBin     @relation(fields: [binId], references: [id])
+  quantity     Int
+  accepted     Int?
+  held         Int?
+  rejected     Int?
+  poReference  String?
+  purchaseOrderId Int?
+  purchaseOrder InventoryPurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: Restrict)
+  note         String?
+  qcNote       String?
+  status       String           @default("DRAFT")
+  createdBy    Int
+  checkedBy    Int?
+  postedBy     Int?
+  resultId     BigInt?          @unique
+  result       InventoryLedger? @relation("ReceiptResult", fields: [resultId], references: [id], onDelete: Restrict)
+  createdAt    DateTime         @default(now())
+  checkedAt    DateTime?
+  postedAt     DateTime?
+
+  @@index([itemId, status])
+}
+
+model InventoryPurchaseOrder {
+  id Int @id @default(autoincrement())
+  code String @unique
+  itemId Int
+  item InventoryItem @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  quantity Int
+  supplier String?
+  note String?
+  status String @default("OPEN")
+  createdBy Int
+  createdAt DateTime @default(now())
+  closedBy Int?
+  closedAt DateTime?
+  receipts InventoryReceipt[]
+
+  @@index([itemId, status])
+}
+
+model InventoryHoldRelease {
+  id         Int             @id @default(autoincrement())
+  code       String          @unique
+  sourceId   BigInt
+  source     InventoryLedger @relation("HoldSource", fields: [sourceId], references: [id], onDelete: Restrict)
+  resultId   BigInt          @unique
+  result     InventoryLedger @relation("HoldResult", fields: [resultId], references: [id], onDelete: Restrict)
+  quantity   Int
+  note       String
+  actorId    Int
+  createdAt  DateTime        @default(now())
+
+  @@index([sourceId])
+}
+
+model InventoryStockReview {
+  id Int @id @default(autoincrement())
+  code String @unique
+  kind String
+  itemId Int
+  item InventoryItem @relation(fields: [itemId], references: [id])
+  binId Int
+  bin InventoryBin @relation(fields: [binId], references: [id])
+  snapshotQty Int
+  snapshotLedgerId BigInt?
+  proposedQty Int
+  recountQty Int?
+  status String @default("PENDING")
+  note String
+  requestedBy Int
+  recountedBy Int?
+  approvedBy Int?
+  resultId BigInt? @unique
+  result InventoryLedger? @relation("StockReviewResult", fields: [resultId], references: [id], onDelete: Restrict)
+  createdAt DateTime @default(now())
+  recountedAt DateTime?
+  approvedAt DateTime?
+
+  @@index([itemId, binId, status])
+}
+
+model InventoryPurchaseProposal {
+  id            Int           @id @default(autoincrement())
+  code          String        @unique
+  itemId        Int
+  item          InventoryItem @relation(fields: [itemId], references: [id])
+  quantity      Int
+  available     Int
+  reorderLevel  Int
+  status        String        @default("DRAFT")
+  requestedBy   Int
+  approvedBy    Int?
+  createdAt     DateTime      @default(now())
+  approvedAt    DateTime?
+  closedBy      Int?
+  closedAt      DateTime?
+  closeNote     String?
+
+  @@index([itemId, status])
+}
+
+model CodeSequence {
+  scope     String   @id
+  value     Int      @default(0)
+  updatedAt DateTime @updatedAt
+}
+
+model User {
+  id                    Int                   @id @default(autoincrement())
+  username              String                @unique @db.VarChar(100)
+  passwordHash          String
+  fullname              String
+  email                 String?
+  phone                 String?
+  division              String?
+  company               String?
+  avatarPath            String?
+  role                  Role                  @default(user)
+  gaRole                GaRole                @default(none)
+  permissionGroupId     Int?
+  permissionGroup       PermissionGroup?      @relation(fields: [permissionGroupId], references: [id], onDelete: SetNull)
+  deletedAt             DateTime?
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+  sessions              WebSession[]
+  mobileTokens          MobileToken[]
+  auditLogs             AuditLog[]
+  aiChats               AiChat[]
+  directFloorPermission FloorMapPermission?
+  floorGroups           FloorMapGroupMember[]
+  gaAreasOwned          GaArea[]              @relation("GaAreaOwner")
+  gaAreaHistory         GaAreaHistory[]
+}
+
+model PermissionGroup {
+  id          Int      @id @default(autoincrement())
+  code        String   @unique @db.VarChar(64)
+  name        String   @db.VarChar(120)
+  description String?
+  permissions String[] @default([])
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  users       User[]
+}
+
+model WebSession {
+  id        String    @id @default(uuid())
+  tokenHash String    @unique
+  csrfHash  String
+  userId    Int
+  user      User      @relation(fields: [userId], references: [id])
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+}
+
+model MobileToken {
+  id         Int       @id @default(autoincrement())
+  tokenHash  String    @unique
+  deviceName String
+  userId     Int
+  user       User      @relation(fields: [userId], references: [id])
+  expiresAt  DateTime
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+}
+
+model Category {
+  id          Int       @id @default(autoincrement())
+  name        String
+  description String?
+  itemType    String
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  assets      Asset[]
+
+  @@unique([name, itemType])
+}
+
+model Location {
+  id          Int       @id @default(autoincrement())
+  name        String    @unique
+  description String?
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  assets      Asset[]
+}
+
+model CustomField {
+  id         Int       @id @default(autoincrement())
+  fieldName  String    @unique
+  fieldLabel String
+  fieldType  String
+  isRequired Boolean   @default(false)
+  deletedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+}
+
+model Asset {
+  id               Int                 @id @default(autoincrement())
+  code             String              @unique
+  name             String
+  categoryId       Int
+  category         Category            @relation(fields: [categoryId], references: [id])
+  locationId       Int
+  location         Location            @relation(fields: [locationId], references: [id])
+  macAddress       String?
+  serialNumber     String?
+  description      String?
+  purchaseDate     DateTime?
+  price            Decimal?            @db.Decimal(18, 2)
+  status           AssetStatus         @default(available)
+  condition        ConditionGrade?
+  assignedUserId   Int?
+  assignedSource   AssignmentSource?
+  assigneeName     String?
+  assigneeCode     String?
+  assigneeCompany  String?
+  assignedAt       DateTime?
+  assignedById     Int?
+  assignmentNote   String?
+  expectedReturnAt DateTime?
+  retiredAt        DateTime?
+  retiredReason    String?
+  externalSource   String?
+  externalId       String?
+  externalHidden   Boolean             @default(false)
+  deletedAt        DateTime?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  customData       AssetCustomData[]
+  history          AssetHistory[]
+  photos           AssetPhoto[]
+  mapPosition      MapAssetPosition?
+  roomMembership   MapAssetRoomItem?
+  gaOfflineCases   GaCctvOfflineCase[]
+  inventoryItem    InventoryItem?
+  cctvCamera       CctvCamera?
+  auditEntries     AssetAuditEntry[]
+
+  @@unique([externalSource, externalId])
+  @@index([status])
+  @@index([categoryId, locationId])
+}
+
+model AssetCustomData {
+  id        Int      @id @default(autoincrement())
+  assetId   Int
+  asset     Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  fieldName String
+  value     String?
+  updatedAt DateTime @updatedAt
+
+  @@unique([assetId, fieldName])
+}
+
+model AssetHistory {
+  id               Int          @id @default(autoincrement())
+  assetId          Int
+  asset            Asset        @relation(fields: [assetId], references: [id])
+  eventType        String
+  actorId          Int?
+  statusFrom       AssetStatus?
+  statusTo         AssetStatus?
+  assigneeSnapshot Json?
+  locationSnapshot Json?
+  note             String?
+  metadata         Json?
+  createdAt        DateTime     @default(now())
+
+  @@index([assetId, createdAt])
+}
+
+model AssetPhoto {
+  id           Int      @id @default(autoincrement())
+  assetId      Int
+  asset        Asset    @relation(fields: [assetId], references: [id])
+  internalName String   @unique
+  originalName String
+  mimeType     String
+  size         Int
+  storage      String   @default("local")
+  createdAt    DateTime @default(now())
+}
+
+model NetworkMonitor {
+  id                     Int             @id @default(autoincrement())
+  name                   String
+  deviceType             String
+  host                   String
+  location               String?
+  timeoutMs              Int             @default(3000)
+  customPorts            Int[]
+  notes                  String?
+  snmpEnabled            Boolean         @default(false)
+  snmpVersion            String?
+  snmpPort               Int             @default(161)
+  snmpCommunityEncrypted String?
+  httpEnabled            Boolean         @default(false)
+  httpUrl                String?
+  lastStatus             MonitorStatus   @default(unknown)
+  latencyMs              Decimal?        @db.Decimal(10, 2)
+  lastMessage            String?
+  lastCheckedAt          DateTime?
+  snapshot               Json?
+  deletedAt              DateTime?
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
+  samples                MonitorSample[]
+  events                 MonitorEvent[]
+  cctvCameras            CctvCamera[]
+  cctvRecorders          CctvRecorder[]
+
+  @@index([host])
+}
+
+model MonitorSample {
+  id            BigInt         @id @default(autoincrement())
+  monitorId     Int
+  monitor       NetworkMonitor @relation(fields: [monitorId], references: [id])
+  status        MonitorStatus?
+  latencyMs     Decimal?       @db.Decimal(10, 2)
+  trafficInBps  Decimal?       @db.Decimal(16, 2)
+  trafficOutBps Decimal?       @db.Decimal(16, 2)
+  temperature   Decimal?       @db.Decimal(6, 2)
+  createdAt     DateTime       @default(now())
+
+  @@index([monitorId, createdAt])
+}
+
+model MonitorEvent {
+  id              BigInt         @id @default(autoincrement())
+  monitorId       Int
+  monitor         NetworkMonitor @relation(fields: [monitorId], references: [id])
+  previousStatus  MonitorStatus?
+  newStatus       MonitorStatus
+  message         String?
+  startedAt       DateTime
+  endedAt         DateTime?
+  durationSeconds Int?
+}
+
+model AppSetting {
+  id             Int      @id @default(autoincrement())
+  group          String
+  key            String
+  value          String?
+  encryptedValue String?
+  isSecret       Boolean  @default(false)
+  updatedAt      DateTime @updatedAt
+
+  @@unique([group, key])
+}
+
+model ItSupportReport {
+  id         Int          @id @default(autoincrement())
+  date       DateTime
+  reporter   String
+  department String
+  location   String
+  category   String
+  analysis   String
+  resolution String?
+  status     ReportStatus @default(OPEN)
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+}
+
+model AuditLog {
+  id         BigInt   @id @default(autoincrement())
+  actorId    Int?
+  actor      User?    @relation(fields: [actorId], references: [id])
+  actorName  String?
+  source     String
+  action     String
+  resource   String
+  resourceId String?
+  method     String
+  route      String
+  statusCode Int
+  ip         String?
+  userAgent  String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model FloorMapPermission {
+  id        Int         @id @default(autoincrement())
+  userId    Int         @unique
+  user      User        @relation(fields: [userId], references: [id])
+  access    FloorAccess @default(none)
+  updatedAt DateTime    @updatedAt
+}
+
+model FloorMapGroup {
+  id          Int                   @id @default(autoincrement())
+  name        String                @unique
+  description String?
+  access      FloorAccess
+  members     FloorMapGroupMember[]
+}
+
+model FloorMapGroupMember {
+  groupId Int
+  userId  Int
+  group   FloorMapGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([groupId, userId])
+}
+
+model FloorMapState {
+  key       String   @id @default("default")
+  state     Json
+  updatedBy Int?
+  updatedAt DateTime @updatedAt
+}
+
+model FloorMapArea {
+  id           Int       @id @default(autoincrement())
+  name         String
+  slug         String    @unique
+  description  String?
+  background   String?
+  canvasWidth  Int       @default(1920)
+  canvasHeight Int       @default(1080)
+  state        Json
+  sortOrder    Int       @default(0)
+  deletedAt    DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+model MapAssetPosition {
+  assetId   Int      @id
+  asset     Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  x         Float
+  y         Float
+  placedBy  Int
+  updatedAt DateTime @updatedAt
+}
+
+model MapAssetRoom {
+  id        Int                @id @default(autoincrement())
+  name      String
+  x         Float
+  y         Float
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+  items     MapAssetRoomItem[]
+}
+
+model MapAssetRoomItem {
+  roomId  Int
+  assetId Int          @unique
+  room    MapAssetRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  asset   Asset        @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  addedAt DateTime     @default(now())
+
+  @@id([roomId, assetId])
+}
+
+model GaArea {
+  id                     Int                     @id @default(autoincrement())
+  code                   String                  @unique
+  name                   String
+  type                   GaAreaType
+  status                 GaAreaStatus            @default(DRAFT)
+  parentId               Int?
+  company                String?
+  site                   String?
+  parent                 GaArea?                 @relation("GaAreaTree", fields: [parentId], references: [id])
+  children               GaArea[]                @relation("GaAreaTree")
+  building               String?
+  floor                  String?
+  description            String?
+  floorPage              Int?
+  x                      Float?
+  y                      Float?
+  qrCode                 String?                 @unique
+  ownerGaId              Int?
+  ownerGa                User?                   @relation("GaAreaOwner", fields: [ownerGaId], references: [id])
+  cameraAssetId          Int?
+  active                 Boolean                 @default(true)
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+  history                GaAreaHistory[]
+  cleaningChecklists     GaCleaningChecklist[]
+  outdoorInspections     GaOutdoorInspection[]
+  gaPreventivePlans      GaPreventivePlan[]
+  gaPreventiveJobs       GaPreventiveJob[]
+  gaCctvOfflineCases     GaCctvOfflineCase[]
+  gaCctvAngleInspections GaCctvAngleInspection[]
+  gaFindings             GaFinding[]
+
+  @@index([parentId])
+  @@index([company, site])
+  @@index([status, active])
+}
+
+model GaAreaHistory {
+  id        BigInt   @id @default(autoincrement())
+  areaId    Int
+  area      GaArea   @relation(fields: [areaId], references: [id], onDelete: Cascade)
+  actorId   Int
+  actor     User     @relation(fields: [actorId], references: [id])
+  action    String
+  snapshot  Json
+  createdAt DateTime @default(now())
+
+  @@index([areaId, createdAt])
+}
+
+model GaCleaningChecklist {
+  id           Int              @id @default(autoincrement())
+  areaId       Int
+  area         GaArea           @relation(fields: [areaId], references: [id])
+  workDate     DateTime         @db.Date
+  assigneeId   Int?
+  status       GaWorkStatus     @default(DRAFT)
+  note         String?
+  submittedAt  DateTime?
+  verifiedById Int?
+  verifiedAt   DateTime?
+  lines        GaCleaningLine[]
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  @@unique([areaId, workDate])
+  @@index([workDate, status])
+}
+
+model GaCleaningLine {
+  id          Int                 @id @default(autoincrement())
+  checklistId Int
+  checklist   GaCleaningChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+  task        String
+  completed   Boolean             @default(false)
+  completedAt DateTime?
+  note        String?
+  sortOrder   Int                 @default(0)
+}
+
+model GaOutdoorInspection {
+  id             Int              @id @default(autoincrement())
+  areaId         Int
+  area           GaArea           @relation(fields: [areaId], references: [id])
+  inspectedAt    DateTime         @db.Date
+  inspectorId    Int?
+  plantCondition String
+  drainCondition String
+  cleanliness    String
+  action         String?
+  status         GaWorkStatus     @default(DRAFT)
+  submittedAt    DateTime?
+  verifiedById   Int?
+  verifiedAt     DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  media          GaOutdoorMedia[]
+
+  @@unique([areaId, inspectedAt])
+  @@index([inspectedAt, status])
+}
+
+model GaPreventivePlan {
+  id            Int                   @id @default(autoincrement())
+  title         String
+  areaId        Int
+  area          GaArea                @relation(fields: [areaId], references: [id])
+  standardWork  String
+  weekNo        Int
+  targetDate    DateTime              @db.Date
+  recurrence    String?
+  pic1Id        Int
+  pic2Id        Int?
+  priority      String                @default("NORMAL")
+  toolsRequired String?
+  status        GaPlanStatus          @default(DRAFT)
+  proposedAt    DateTime?
+  approvedById  Int?
+  approvedAt    DateTime?
+  releasedAt    DateTime?
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+  job           GaPreventiveJob?
+  history       GaPreventiveHistory[]
+
+  @@index([targetDate, status])
+  @@index([areaId, weekNo])
+}
+
+model GaPreventiveJob {
+  id           Int                   @id @default(autoincrement())
+  planId       Int                   @unique
+  plan         GaPreventivePlan      @relation(fields: [planId], references: [id], onDelete: Cascade)
+  areaId       Int
+  area         GaArea                @relation(fields: [areaId], references: [id])
+  pic1Id       Int
+  pic2Id       Int?
+  targetDate   DateTime              @db.Date
+  standardWork String
+  status       GaPreventiveJobStatus @default(RELEASED)
+  startedAt    DateTime?
+  completedAt  DateTime?
+  result       String?
+  beforePhoto  String?
+  afterPhoto   String?
+  submittedAt  DateTime?
+  verifiedById Int?
+  verifiedAt   DateTime?
+  reworkReason String?
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+  history      GaPreventiveHistory[]
+
+  @@index([targetDate, status])
+  @@index([pic1Id, pic2Id])
+}
+
+model GaPreventiveHistory {
+  id        BigInt            @id @default(autoincrement())
+  planId    Int?
+  plan      GaPreventivePlan? @relation(fields: [planId], references: [id], onDelete: Cascade)
+  jobId     Int?
+  job       GaPreventiveJob?  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  actorId   Int
+  action    String
+  snapshot  Json
+  createdAt DateTime          @default(now())
+
+  @@index([planId, createdAt])
+  @@index([jobId, createdAt])
+}
+
+enum GaAngleStatus {
+  PLANNED
+  INSPECTED
+  MATCH
+  GAP_FOUND
+  IT_ACTION
+  RECHECK
+  CLOSED
+}
+
+enum GaFindingStatus {
+  OPEN
+  IN_PROGRESS
+  ESCALATED
+  RESOLVED
+  VERIFIED
+  CLOSED
+}
+
+enum GaReconciliationStatus {
+  PENDING
+  MATCH
+  DISCREPANCY
+  RESOLVED
+  VERIFIED
+}
+
+model GaCctvAngleInspection {
+  id                   Int           @id @default(autoincrement())
+  cameraAssetId        Int?
+  cameraName           String
+  areaId               Int?
+  area                 GaArea?       @relation(fields: [areaId], references: [id])
+  plannedViewReference String?
+  actualViewPhoto      String?
+  coverage             String?
+  gapDescription       String?
+  status               GaAngleStatus @default(PLANNED)
+  inspectedAt          DateTime?
+  inspectorId          Int
+  ticketReference      String?
+  reviewerId           Int?
+  reviewedAt           DateTime?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  @@index([status, createdAt])
+}
+
+model GaWeighbridgeReconciliation {
+  id                Int                    @id @default(autoincrement())
+  ticketNumber      String                 @unique
+  securityTime      DateTime
+  cctvTime          DateTime
+  cameraName        String
+  plateNumber       String?
+  vehicleType       String?
+  goodsType         String?
+  durationMinutes   Int?
+  checkerId         Int
+  status            GaReconciliationStatus @default(PENDING)
+  discrepancyReason String?
+  verifiedById      Int?
+  verifiedAt        DateTime?
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+
+  @@index([status, securityTime])
+}
+
+model GaFinding {
+  id               Int             @id @default(autoincrement())
+  code             String          @unique
+  title            String
+  description      String
+  source           String
+  areaId           Int?
+  area             GaArea?         @relation(fields: [areaId], references: [id])
+  severity         String          @default("MEDIUM")
+  status           GaFindingStatus @default(OPEN)
+  assigneeId       Int?
+  dueDate          DateTime?
+  containment      String?
+  rootCause        String?
+  correctiveAction String?
+  evidence         String?
+  escalatedTicket  String?
+  verifiedById     Int?
+  verifiedAt       DateTime?
+  createdById      Int
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  @@index([status, dueDate])
+}
+
+model GaOutdoorMedia {
+  id           Int                 @id @default(autoincrement())
+  inspectionId Int
+  inspection   GaOutdoorInspection @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
+  type         GaOutdoorMediaType
+  internalName String
+  originalName String
+  mimeType     String
+  size         Int
+  createdById  Int
+  createdAt    DateTime            @default(now())
+
+  @@index([inspectionId])
+}
+
+model GaCctvOfflineCase {
+  id              Int                 @id @default(autoincrement())
+  cameraAssetId   Int?
+  cameraAsset     Asset?              @relation(fields: [cameraAssetId], references: [id])
+  cameraName      String
+  areaId          Int?
+  area            GaArea?             @relation(fields: [areaId], references: [id])
+  detectedAt      DateTime
+  recoveredAt     DateTime?
+  offlineMinutes  Int?
+  source          String              @default("MANUAL")
+  severity        String              @default("MEDIUM")
+  screenshot      String?
+  reason          String?
+  status          GaCctvOfflineStatus @default(DETECTED)
+  validatedAt     DateTime?
+  escalatedAt     DateTime?
+  repairStartedAt DateTime?
+  verifiedById    Int?
+  verifiedAt      DateTime?
+  createdById     Int
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@index([status, detectedAt])
+  @@index([cameraAssetId, detectedAt])
+}
+
+model IntegrationResource {
+  id         Int       @id @default(autoincrement())
+  domain     String
+  externalId String?
+  name       String
+  config     Json
+  secret     String?
+  active     Boolean   @default(true)
+  deletedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@unique([domain, name])
+}
+
+model MobileRelease {
+  id           Int       @id @default(autoincrement())
+  platform     String    @default("android")
+  versionName  String
+  versionCode  Int
+  notes        String?
+  forceUpdate  Boolean   @default(false)
+  storedName   String
+  originalName String
+  size         Int
+  checksum     String
+  active       Boolean   @default(false)
+  createdBy    Int
+  publishedAt  DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@unique([platform, versionCode])
+}
+
+model AiMemory {
+  id                 Int      @id @default(autoincrement())
+  normalizedQuestion String
+  fingerprint        String
+  answer             String
+  model              String
+  useCount           Int      @default(1)
+  lastUsedAt         DateTime @default(now())
+  createdAt          DateTime @default(now())
+
+  @@unique([normalizedQuestion, fingerprint])
+}
+
+model AiChat {
+  id        BigInt   @id @default(autoincrement())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question  String
+  answer    String
+  model     String
+  tools     Json
+  verified  Json
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model JobRun {
+  id           String    @id @default(uuid())
+  job          String
+  status       String
+  processed    Int       @default(0)
+  succeeded    Int       @default(0)
+  failed       Int       @default(0)
+  errorSummary String?
+  startedAt    DateTime  @default(now())
+  finishedAt   DateTime?
+}
+
+model CctvRecorder {
+  id                  Int             @id @default(autoincrement())
+  code                String          @unique
+  name                String
+  site                String
+  address             String?
+  monitorId           Int?
+  monitor             NetworkMonitor? @relation(fields: [monitorId], references: [id], onDelete: SetNull)
+  capacityGb          Float?
+  freeGb              Float?
+  targetRetentionDays Int?
+  actualRetentionDays Int?
+  lastRecordingAt     DateTime?
+  storageCheckedAt    DateTime?
+  status              String          @default("ACTIVE")
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+  cameras             CctvCamera[]
+}
+
+model CctvCamera {
+  id            Int                @id @default(autoincrement())
+  code          String             @unique
+  sourceMarkerId String?           @unique
+  name          String
+  site          String
+  zone          String?
+  assetId       Int?               @unique
+  asset         Asset?             @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  recorderId    Int?
+  recorder      CctvRecorder?      @relation(fields: [recorderId], references: [id], onDelete: SetNull)
+  monitorId     Int?
+  monitor       NetworkMonitor?    @relation(fields: [monitorId], references: [id], onDelete: SetNull)
+  channel       Int?
+  serial        String?
+  address       String?
+  coverageArea  String?
+  floorPage     Int?
+  x             Float?
+  y             Float?
+  rotation      Float?
+  fieldOfView   Float?
+  retentionDays Int?
+  status        String             @default("DRAFT")
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  maintenance   CctvMaintenance[]
+  verifications CctvVerification[]
+  evidence      CctvEvidence[]
+
+  @@unique([recorderId, channel])
+}
+
+model CctvMaintenance {
+  id              Int        @id @default(autoincrement())
+  code            String     @unique
+  cameraId        Int
+  camera          CctvCamera @relation(fields: [cameraId], references: [id])
+  kind            String
+  task            String
+  dueAt           DateTime
+  status          String     @default("PLANNED")
+  result          String?
+  ticketReference String?
+  createdById     Int
+  completedById   Int?
+  verifiedById    Int?
+  completedAt     DateTime?
+  verifiedAt      DateTime?
+  createdAt       DateTime   @default(now())
+  evidence        CctvEvidence[]
+}
+
+model CctvVerification {
+  id             Int        @id @default(autoincrement())
+  code           String     @unique
+  cameraId       Int
+  camera         CctvCamera @relation(fields: [cameraId], references: [id])
+  actualLocation String
+  serialMatch    Boolean
+  channelMatch   Boolean
+  installed      Boolean
+  note           String?
+  verifiedById   Int
+  createdAt      DateTime   @default(now())
+  evidence       CctvEvidence[]
+}
+
+model CctvEvidence {
+  id             Int               @id @default(autoincrement())
+  cameraId       Int
+  camera         CctvCamera        @relation(fields: [cameraId], references: [id], onDelete: Restrict)
+  maintenanceId  Int?
+  maintenance    CctvMaintenance?  @relation(fields: [maintenanceId], references: [id], onDelete: Restrict)
+  verificationId Int?
+  verification   CctvVerification? @relation(fields: [verificationId], references: [id], onDelete: Restrict)
+  internalName   String            @unique
+  originalName   String
+  mimeType       String
+  size           Int
+  uploadedById   Int
+  createdAt      DateTime          @default(now())
+
+  @@index([cameraId, createdAt])
+}
+
+model AssetAuditSession {
+  id           Int               @id @default(autoincrement())
+  code         String            @unique
+  name         String
+  status       String            @default("OPEN")
+  createdById  Int
+  reviewedById Int?
+  createdAt    DateTime          @default(now())
+  closedAt     DateTime?
+  entries      AssetAuditEntry[]
+}
+
+model AssetAuditEntry {
+  id               Int               @id @default(autoincrement())
+  sessionId        Int
+  session          AssetAuditSession @relation(fields: [sessionId], references: [id])
+  assetId          Int
+  asset            Asset             @relation(fields: [assetId], references: [id])
+  expectedLocation String
+  actualLocation   String
+  expectedSerial   String?
+  actualSerial     String?
+  found            Boolean
+  condition        String?
+  note             String?
+  countedById      Int
+  createdAt        DateTime          @default(now())
+
+  @@unique([sessionId, assetId])
+}

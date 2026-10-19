@@ -1,0 +1,35 @@
+{
+  "name": "ism-platform",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/api",
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c blue,magenta \"npm run dev -w @ism/api\" \"npm run dev -w @ism/web\"",
+    "build": "npm run build -w @ism/api && npm run build -w @ism/web",
+    "test": "npm run test -w @ism/api",
+    "typecheck": "npm run typecheck -w @ism/api && npm run typecheck -w @ism/web",
+    "db:generate": "node scripts/run-api-task.cjs prisma:generate",
+    "db:migrate": "node scripts/run-api-task.cjs prisma:migrate",
+    "db:seed": "node scripts/run-api-task.cjs prisma:seed",
+    "start": "npm run start -w @ism/api",
+    "pm2:start": "pm2 start ecosystem.config.cjs",
+    "pm2:restart": "pm2 restart ecosystem.config.cjs --update-env",
+    "pm2:stop": "pm2 stop ecosystem.config.cjs",
+    "pm2:logs": "pm2 logs",
+    "pm2:list": "pm2 list",
+    "migrate:legacy": "node scripts/legacy-migrate.cjs",
+    "migrate:legacy-network": "node scripts/legacy-network-migrate.cjs",
+    "test:inventory": "npm run build -w @ism/api && node scripts/test-inventory-integration.cjs"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "pm2": "^6.0.13",
+    "prettier": "^3.9.10"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

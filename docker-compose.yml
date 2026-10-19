@@ -1,0 +1,54 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ism
+      POSTGRES_USER: ism
+      POSTGRES_PASSWORD: ism_dev_password
+      TZ: Asia/Jakarta
+    ports:
+      - "5432:5432"
+    volumes:
+      - ism_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ism -d ism"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  api:
+    build:
+      context: .
+      target: api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://ism:ism_dev_password@postgres:5432/ism?schema=public
+      NODE_ENV: production
+      CORS_ORIGINS: http://localhost:3000
+      UPLOAD_ROOT: /app/uploads
+    ports:
+      - "8001:8001"
+    volumes:
+      - ism_uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+  web:
+    build:
+      context: .
+      target: web
+      args:
+        NEXT_PUBLIC_API_URL: /api/v1
+    restart: unless-stopped
+    environment:
+      API_ORIGIN: http://api:8001
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  ism_postgres_data:
+  ism_uploads:
+

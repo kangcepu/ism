@@ -1,0 +1,23 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "gray-on-color",
+        "value": "*",
+        "files": [
+          "apps/web/src/app/globals.css"
+        ],
+        "createdAt": "2026-10-19T09:46:58.579Z",
+        "reason": "False positive: text-slate-700 is used on a white secondary button, not on a colored background."
+      },
+      {
+        "rule": "overused-font",
+        "value": "inter",
+        "createdAt": "2026-10-19T09:47:12.789Z",
+        "reason": "Intentional UI font for an internal operations system: Inter provides consistent readability across dense tables, forms, and monitoring data."
+      }
+    ]
+  }
+}
