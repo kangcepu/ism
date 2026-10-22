@@ -247,15 +247,18 @@ export class GaPreventiveController {
     @Param("id", ParseIntPipe) id: number,
   ) {
     const job = await this.ownJob(actor, id);
+    if (!["STARTED", "OVERDUE", "REWORK"].includes(job.status))
+      throw new ConflictException("Pekerjaan belum dapat dikirim.");
     if (!job.result || !job.beforePhoto || !job.afterPhoto)
       throw new ConflictException(
         "Hasil dan foto sebelum/sesudah wajib diisi.",
       );
     return this.db.gaPreventiveJob.update({
-      where: { id },
+      where: { id, status: job.status },
       data: {
         status: "SUBMITTED",
         submittedAt: new Date(),
+        submittedById: actor.id,
         completedAt: new Date(),
       },
     });
@@ -268,6 +271,17 @@ export class GaPreventiveController {
   ) {
     if (!canSupervise(actor))
       throw new ForbiddenException("Supervisor GA diperlukan.");
+    const job = await this.db.gaPreventiveJob.findUniqueOrThrow({
+      where: { id },
+    });
+    if (job.status !== "SUBMITTED")
+      throw new ConflictException(
+        "Pekerjaan harus dikirim sebelum diverifikasi.",
+      );
+    if ([job.pic1Id, job.pic2Id, job.submittedById].includes(actor.id))
+      throw new ForbiddenException(
+        "Petugas atau pengirim tidak dapat memverifikasi pekerjaannya sendiri.",
+      );
     return this.db.gaPreventiveJob.update({
       where: { id, status: "SUBMITTED" },
       data: {
@@ -286,6 +300,17 @@ export class GaPreventiveController {
   ) {
     if (!canSupervise(actor))
       throw new ForbiddenException("Supervisor GA diperlukan.");
+    const job = await this.db.gaPreventiveJob.findUniqueOrThrow({
+      where: { id },
+    });
+    if (job.status !== "SUBMITTED")
+      throw new ConflictException(
+        "Pekerjaan harus dikirim sebelum dikembalikan.",
+      );
+    if ([job.pic1Id, job.pic2Id, job.submittedById].includes(actor.id))
+      throw new ForbiddenException(
+        "Petugas atau pengirim tidak dapat memeriksa pekerjaannya sendiri.",
+      );
     const updated = await this.db.gaPreventiveJob.update({
       where: { id, status: "SUBMITTED" },
       data: {

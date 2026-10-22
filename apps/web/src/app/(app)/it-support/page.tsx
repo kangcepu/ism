@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { API, api, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { Empty, PageHeader, StatusBadge } from "@/components/page";
+import { GaTickets } from "./ga-tickets";
 
 type Report = {
   id: number;
@@ -159,6 +160,7 @@ export default function SupportReportsPage() {
           {notice}
         </p>
       )}
+      <GaTickets />
       <section className="card p-4">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {[

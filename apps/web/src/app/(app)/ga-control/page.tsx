@@ -9,6 +9,7 @@ import {
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import { Empty, PageHeader, StatusBadge } from "@/components/page";
+import { GaReports } from "./reports";
 const blankAngle = { cameraName: "", coverage: "", gapDescription: "" };
 const blankReconciliation = {
   ticketNumber: "",
@@ -64,6 +65,21 @@ export default function GaControlPage() {
       setError(e instanceof ApiError ? e.message : "Aksi gagal.");
     }
   }
+  async function resolveReconciliation(id: number) {
+    const reason = window.prompt("Hasil pemeriksaan dan penyelesaian selisih");
+    if (!reason?.trim()) return;
+    try {
+      await api(`/ga/control/reconciliations/${id}/resolve`, {
+        method: "POST",
+        body: JSON.stringify({ reason }),
+      });
+      await load();
+    } catch (e) {
+      setError(
+        e instanceof ApiError ? e.message : "Selisih gagal diselesaikan.",
+      );
+    }
+  }
   const fields = (items: string[]) =>
     items.map((k) => (
       <label key={k}>
@@ -89,6 +105,7 @@ export default function GaControlPage() {
       <div className="mb-5 flex flex-wrap gap-2">
         {[
           ["dashboard", "Dashboard"],
+          ["reports", "KPI & Laporan"],
           ["angles", "CCTV Angle"],
           ["reconciliations", "Timbangan"],
           ["findings", "Finding"],
@@ -115,6 +132,7 @@ export default function GaControlPage() {
           ))}
         </div>
       )}
+      {tab === "reports" && <GaReports />}
       {tab === "angles" && (
         <section className="card p-5">
           <h2 className="font-semibold">Inspeksi Angle & Coverage</h2>
@@ -143,7 +161,7 @@ export default function GaControlPage() {
                 </span>
                 <div className="flex gap-2">
                   <StatusBadge value={x.status} />
-                  {x.status === "INSPECTED" && (
+                  {["INSPECTED", "RECHECK"].includes(x.status) && (
                     <>
                       <button
                         className="btn-secondary"
@@ -162,6 +180,36 @@ export default function GaControlPage() {
                         Gap
                       </button>
                     </>
+                  )}
+                  {x.status === "GAP_FOUND" && (
+                    <button
+                      className="btn-secondary"
+                      onClick={() =>
+                        void action(`/ga/control/angles/${x.id}/it`)
+                      }
+                    >
+                      Tindak Lanjut IT
+                    </button>
+                  )}
+                  {x.status === "IT_ACTION" && (
+                    <button
+                      className="btn-secondary"
+                      onClick={() =>
+                        void action(`/ga/control/angles/${x.id}/recheck`)
+                      }
+                    >
+                      Periksa Ulang
+                    </button>
+                  )}
+                  {x.status === "MATCH" && (
+                    <button
+                      className="btn-primary"
+                      onClick={() =>
+                        void action(`/ga/control/angles/${x.id}/close`)
+                      }
+                    >
+                      Tutup
+                    </button>
                   )}
                 </div>
               </div>
@@ -206,7 +254,15 @@ export default function GaControlPage() {
                 </span>
                 <div className="flex gap-2">
                   <StatusBadge value={x.status} />
-                  {x.status !== "VERIFIED" && (
+                  {x.status === "DISCREPANCY" && (
+                    <button
+                      className="btn-secondary"
+                      onClick={() => void resolveReconciliation(x.id)}
+                    >
+                      Selesaikan Selisih
+                    </button>
+                  )}
+                  {["MATCH", "RESOLVED"].includes(x.status) && (
                     <button
                       className="btn-secondary"
                       onClick={() =>
@@ -251,9 +307,29 @@ export default function GaControlPage() {
                   <small className="block text-slate-500">
                     {x.description}
                   </small>
+                  {x.itTicket && (
+                    <small className="block text-blue-700">
+                      Tiket IT {x.itTicket.code} · {x.itTicket.status}
+                    </small>
+                  )}
+                  {x.itTicket?.resolution && (
+                    <small className="block text-emerald-700">
+                      Penanganan IT: {x.itTicket.resolution}
+                    </small>
+                  )}
                 </span>
                 <div className="flex gap-2">
                   <StatusBadge value={x.status} />
+                  {!x.itTicket && x.status !== "CLOSED" && (
+                    <button
+                      className="btn-secondary"
+                      onClick={() =>
+                        void action(`/ga/control/findings/${x.id}/ticket`)
+                      }
+                    >
+                      Buat Tiket IT
+                    </button>
+                  )}
                   {x.status === "OPEN" && (
                     <button
                       className="btn-secondary"

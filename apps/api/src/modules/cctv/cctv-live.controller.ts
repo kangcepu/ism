@@ -10,7 +10,8 @@ import { access } from "./cctv.controller";
 type Marker = Record<string, unknown>;
 type Json = Record<string, unknown>;
 type LiveResult = {
-  cameraId: number;
+  cameraId: number | null;
+  markerId: string;
   status: "online" | "offline" | "unknown";
   recording: boolean | null;
   fps: number | null;
@@ -181,13 +182,14 @@ export class CctvLiveService {
         url: string;
         user: string;
         password: string;
-        rows: Array<{ camera: (typeof cameras)[number]; marker: Marker }>;
+        rows: Array<{ cameraId: number | null; markerId: string; marker: Marker }>;
       }
     >();
     const checkedAt = new Date().toISOString();
     const result: LiveResult[] = [];
-    const unknown = (cameraId: number, message: string): LiveResult => ({
+    const unknown = (cameraId: number | null, markerId: string, message: string): LiveResult => ({
       cameraId,
+      markerId,
       status: "unknown",
       recording: null,
       fps: null,
@@ -195,6 +197,7 @@ export class CctvLiveService {
       source: "BLUE_IRIS",
       message,
     });
+    const mapped = new Set<string>();
     for (const camera of cameras) {
       const markerId = camera.sourceMarkerId?.startsWith("floor-map:")
         ? camera.sourceMarkerId.slice(10)
@@ -215,17 +218,37 @@ export class CctvLiveService {
         result.push(
           unknown(
             camera.id,
+            markerId,
             "Konfigurasi Blue Iris belum tersedia atau alamat tidak didukung.",
           ),
         );
         continue;
       }
+      mapped.add(markerId);
       const groupKey = createHash("sha256")
         .update(`${url}\0${user}\0${password}`)
         .digest("hex");
       if (!groups.has(groupKey))
         groups.set(groupKey, { url, user, password, rows: [] });
-      groups.get(groupKey)!.rows.push({ camera, marker });
+      groups.get(groupKey)!.rows.push({ cameraId: camera.id, markerId, marker });
+    }
+    for (const [markerId, marker] of markers) {
+      if (mapped.has(markerId) || !String(marker.kind || "").toLowerCase().includes("cctv")) continue;
+      const url = serverUrl(marker.blueIrisServer);
+      const user = typeof marker.blueIrisUser === "string" ? marker.blueIrisUser : "";
+      let password = typeof marker.blueIrisPass === "string" ? marker.blueIrisPass : "";
+      try {
+        if (password.startsWith("enc:v1:")) password = this.crypto.decrypt(password.slice(7));
+      } catch {
+        password = "";
+      }
+      if (!url) {
+        result.push(unknown(null, markerId, "Konfigurasi Blue Iris belum tersedia atau alamat tidak didukung."));
+        continue;
+      }
+      const groupKey = createHash("sha256").update(`${url}\0${user}\0${password}`).digest("hex");
+      if (!groups.has(groupKey)) groups.set(groupKey, { url, user, password, rows: [] });
+      groups.get(groupKey)!.rows.push({ cameraId: null, markerId, marker });
     }
     const allGroups = [...groups.values()];
     for (let index = 0; index < allGroups.length; index += 4) {
@@ -286,7 +309,8 @@ export class CctvLiveService {
               if (matches.length !== 1) {
                 result.push(
                   unknown(
-                    row.camera.id,
+                    row.cameraId,
+                    row.markerId,
                     matches.length
                       ? "Kamera Blue Iris tidak unik."
                       : "Kamera tidak ditemukan di Blue Iris.",
@@ -295,7 +319,8 @@ export class CctvLiveService {
                 continue;
               }
               result.push({
-                cameraId: row.camera.id,
+                cameraId: row.cameraId,
+                markerId: row.markerId,
                 ...status(matches[0]),
                 checkedAt,
                 source: "BLUE_IRIS",
@@ -305,8 +330,9 @@ export class CctvLiveService {
           } catch {
             for (const row of group.rows)
               result.push(
-                unknown(
-                  row.camera.id,
+                  unknown(
+                  row.cameraId,
+                  row.markerId,
                   "Blue Iris tidak dapat dihubungi atau autentikasi gagal.",
                 ),
               );

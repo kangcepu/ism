@@ -20,11 +20,33 @@ type MapMarker = {
   x: number;
   y: number;
   iconUrl?: string;
+  scale?: number;
+  color?: string;
+  strokeColor?: string;
+  labelColor?: string;
+  labelSize?: number;
+  ip?: string;
+  mac?: string;
+  notes?: string;
+  live?: {
+    status: "online" | "offline" | "degraded" | "unknown";
+    source: string;
+    message: string;
+    checkedAt: string | null;
+    temperature?: number | null;
+    trafficInBps?: number | null;
+    trafficOutBps?: number | null;
+    fps?: number | null;
+    clients?: number | null;
+  };
 };
 type MapCable = {
   id: string;
   points: { x: number; y: number }[];
   color: string;
+  label?: string;
+  labelColor?: string;
+  labelSize?: number;
 };
 type Background = {
   page: number;
@@ -93,6 +115,17 @@ function safeSvg(input: string) {
     purifier.removeHook("uponSanitizeAttribute");
   }
 }
+
+const rate = (value: number) => {
+  const units = ["bps", "Kbps", "Mbps", "Gbps"];
+  let amount = value;
+  let index = 0;
+  while (amount >= 1000 && index < units.length - 1) {
+    amount /= 1000;
+    index += 1;
+  }
+  return `${amount >= 100 ? amount.toFixed(0) : amount.toFixed(1)} ${units[index]}`;
+};
 
 export function MapCanvas({
   background,
@@ -371,7 +404,7 @@ export function MapCanvas({
       </div>
       <div
         ref={viewport}
-        className={`relative h-[60vh] min-h-[380px] max-h-[760px] overflow-hidden bg-slate-100 ${moving ? "cursor-crosshair" : "cursor-grab active:cursor-grabbing"}`}
+        className={`relative h-[58vh] min-h-[380px] max-h-[760px] overflow-hidden bg-slate-100 lg:h-[calc(100vh-15rem)] ${moving ? "cursor-crosshair" : "cursor-grab active:cursor-grabbing"}`}
         style={{ touchAction: "none" }}
         onPointerDown={pointerDown}
         onPointerMove={pointerMove}
@@ -445,14 +478,19 @@ export function MapCanvas({
               cables
                 .filter((cable) => cable.points.length > 1)
                 .map((cable) => (
+                  <g key={cable.id}>
                   <polyline
-                    key={cable.id}
                     points={cable.points.map((p) => `${p.x},${p.y}`).join(" ")}
                     fill="none"
                     stroke={cable.color}
                     strokeWidth="2"
                     vectorEffect="non-scaling-stroke"
                   />
+                  {cable.label && cable.points.length > 1 && (() => {
+                    const point = cable.points[Math.floor(cable.points.length / 2)];
+                    return <text x={point.x} y={point.y - 1.5} fill={cable.labelColor || cable.color} fontSize={cable.labelSize || 2.4} fontWeight="600" textAnchor="middle">{cable.label}</text>;
+                  })()}
+                  </g>
                 ))}
           </svg>
           {markers.map((item) => (
@@ -469,7 +507,9 @@ export function MapCanvas({
               style={{
                 left: `${item.x}%`,
                 top: `${item.y}%`,
-                transform: `translate(-50%, -50%) scale(${1 / view.zoom})`,
+                transform: `translate(-50%, -50%) scale(${(item.scale || 1) / view.zoom})`,
+                backgroundColor: item.color,
+                borderColor: item.strokeColor,
               }}
               className={`group absolute z-10 grid h-7 w-7 place-items-center overflow-hidden rounded-full border-2 border-white shadow-md focus:z-30 focus:outline-none focus:ring-2 focus:ring-blue-500 ${selected === item.id ? "z-20 bg-blue-700 ring-2 ring-blue-300" : item.kind.toLowerCase().includes("cctv") ? "bg-emerald-600" : item.kind.toLowerCase().includes("ap") ? "bg-violet-600" : "bg-blue-600"}`}
             >
@@ -487,10 +527,32 @@ export function MapCanvas({
                 <Network size={15} className="text-white" />
               )}
               <span
-                className={`pointer-events-none absolute left-1/2 top-full mt-1 w-max max-w-44 -translate-x-1/2 truncate rounded-md border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold text-slate-700 shadow ${showLabels || selected === item.id ? "block" : "hidden group-hover:block group-focus:block"}`}
+                className={`pointer-events-none absolute left-1/2 top-full mt-1 w-max max-w-44 -translate-x-1/2 truncate rounded-md border border-slate-200 bg-white px-2 py-1 font-semibold shadow ${showLabels || selected === item.id ? "block" : "hidden group-hover:block group-focus:block"}`}
+                style={{ color: item.labelColor || "#334155", fontSize: item.labelSize || 10 }}
               >
                 {item.name}
               </span>
+              {item.live && (
+                <span
+                  aria-hidden="true"
+                  className={`absolute -right-1 -top-1 h-3 w-3 rounded-full border-2 border-white ${item.live.status === "online" ? "bg-emerald-500" : item.live.status === "offline" ? "bg-rose-500" : item.live.status === "degraded" ? "bg-amber-400" : "bg-slate-400"}`}
+                />
+              )}
+              {item.live && (
+                <span className="pointer-events-none absolute bottom-full left-1/2 z-30 mb-2 hidden w-56 -translate-x-1/2 rounded-lg border border-slate-200 bg-white p-3 text-left text-xs text-slate-700 shadow-xl group-hover:block group-focus:block">
+                  <span className="block font-semibold text-slate-900">{item.name}</span>
+                  <span className="mt-1 block capitalize">{item.live.status} · {item.live.source}</span>
+                  {item.ip && <span className="mt-1 block">IP: {item.ip}</span>}
+                  {item.mac && <span className="block">MAC: {item.mac}</span>}
+                  {item.live.temperature != null && <span className="mt-1 block">Suhu chassis: {item.live.temperature} °C</span>}
+                  {item.live.trafficInBps != null && <span className="block">Masuk: {rate(item.live.trafficInBps)}</span>}
+                  {item.live.trafficOutBps != null && <span className="block">Keluar: {rate(item.live.trafficOutBps)}</span>}
+                  {item.live.fps != null && <span className="block">FPS kamera: {item.live.fps}</span>}
+                  {item.live.clients != null && <span className="block">Klien AP: {item.live.clients}</span>}
+                  {item.notes && <span className="mt-1 block text-slate-500">{item.notes}</span>}
+                  <span className="mt-1 block text-slate-500">{item.live.message}</span>
+                </span>
+              )}
             </button>
           ))}
         </div>

@@ -319,11 +319,20 @@ export default function GaAreasPage() {
                   value={form.status}
                   onChange={(e) => setForm({ ...form, status: e.target.value })}
                 >
-                  {["DRAFT", "REVIEW", "ACTIVE", "REVISED", "RETIRED"].map(
-                    (value) => (
-                      <option key={value}>{value}</option>
-                    ),
-                  )}
+                  {(editing
+                    ? (
+                        {
+                          DRAFT: ["DRAFT", "REVIEW"],
+                          REVIEW: ["REVIEW", "DRAFT", "ACTIVE"],
+                          ACTIVE: ["ACTIVE", "REVISED", "RETIRED"],
+                          REVISED: ["REVISED", "REVIEW", "RETIRED"],
+                          RETIRED: ["RETIRED"],
+                        } as Record<string, string[]>
+                      )[editing.status] || [editing.status]
+                    : ["DRAFT"]
+                  ).map((value) => (
+                    <option key={value}>{value}</option>
+                  ))}
                 </select>
               </label>
             </div>

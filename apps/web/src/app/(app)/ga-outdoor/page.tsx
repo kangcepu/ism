@@ -21,12 +21,14 @@ type Area = {
 };
 type Inspection = {
   id: number;
+  areaId: number;
   status: string;
   plantCondition: string;
   drainCondition: string;
   cleanliness: string;
   action: string | null;
   area: { code: string; name: string };
+  media: { id: number; type: string; originalName: string }[];
 };
 const today = () => new Date().toISOString().slice(0, 10);
 const blank = {
@@ -44,6 +46,8 @@ export default function GaOutdoorPage() {
   const [records, setRecords] = useState<Inspection[]>([]);
   const [form, setForm] = useState(blank);
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<Inspection | null>(null);
+  const [savedId, setSavedId] = useState<number | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -72,16 +76,41 @@ export default function GaOutdoorPage() {
     event.preventDefault();
     setBusy(true);
     try {
-      await api("/ga/outdoor", {
-        method: "POST",
-        body: JSON.stringify({
-          ...form,
-          areaId: Number(form.areaId),
-          inspectedAt: date,
-          action: form.action || undefined,
-        }),
-      });
+      const existingId = editing?.id ?? savedId;
+      const result = await api<{ id: number }>(
+        existingId ? `/ga/outdoor/${existingId}` : "/ga/outdoor",
+        {
+          method: existingId ? "PATCH" : "POST",
+          body: JSON.stringify(
+            existingId
+              ? {
+                  plantCondition: form.plantCondition,
+                  drainCondition: form.drainCondition,
+                  cleanliness: form.cleanliness,
+                  action: form.action || null,
+                }
+              : {
+                  ...form,
+                  areaId: Number(form.areaId),
+                  inspectedAt: date,
+                  action: form.action || undefined,
+                },
+          ),
+        },
+      );
+      setSavedId(result.id);
+      if (files.length) {
+        const upload = new FormData();
+        files.forEach((file) => upload.append("files", file));
+        await api(`/ga/outdoor/${result.id}/media`, {
+          method: "POST",
+          body: upload,
+        });
+      }
       setForm(blank);
+      setEditing(null);
+      setSavedId(null);
+      setFiles([]);
       setOpen(false);
       await load();
     } catch (e) {
@@ -109,7 +138,16 @@ export default function GaOutdoorPage() {
         title="Monitoring Area Luar"
         description="Inspeksi kondisi tanaman, parit, dan kebersihan area luar untuk tindak lanjut GA."
         actions={
-          <button className="btn-primary" onClick={() => setOpen(true)}>
+          <button
+            className="btn-primary"
+            onClick={() => {
+              setEditing(null);
+              setSavedId(null);
+              setForm(blank);
+              setFiles([]);
+              setOpen(true);
+            }}
+          >
             <Plus className="h-4 w-4" />
             Buat Inspeksi
           </button>
@@ -171,7 +209,42 @@ export default function GaOutdoorPage() {
                 Tindak lanjut: {record.action}
               </p>
             )}
+            {!!record.media?.length && (
+              <div className="mx-4 mb-4 flex flex-wrap gap-2">
+                {record.media.map((media) => (
+                  <a
+                    className="text-sm text-blue-700 underline"
+                    key={media.id}
+                    href={`${API}/ga/outdoor/media/${media.id}/file`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {media.originalName}
+                  </a>
+                ))}
+              </div>
+            )}
             <div className="flex flex-wrap justify-end gap-2 border-t bg-slate-50 p-3">
+              {["DRAFT", "REWORK"].includes(record.status) && (
+                <button
+                  className="btn-secondary"
+                  onClick={() => {
+                    setEditing(record);
+                    setSavedId(null);
+                    setForm({
+                      areaId: String(record.areaId),
+                      plantCondition: record.plantCondition,
+                      drainCondition: record.drainCondition,
+                      cleanliness: record.cleanliness,
+                      action: record.action || "",
+                    });
+                    setFiles([]);
+                    setOpen(true);
+                  }}
+                >
+                  Ubah & Lampiran
+                </button>
+              )}
               {["DRAFT", "REWORK"].includes(record.status) && (
                 <button
                   className="btn-secondary"
@@ -215,7 +288,11 @@ export default function GaOutdoorPage() {
           >
             <div className="flex items-center gap-2">
               <ClipboardCheck className="h-5 w-5 text-emerald-600" />
-              <h2 className="text-lg font-bold">Buat Inspeksi Area Luar</h2>
+              <h2 className="text-lg font-bold">
+                {editing
+                  ? "Ubah Inspeksi Area Luar"
+                  : "Buat Inspeksi Area Luar"}
+              </h2>
             </div>
             <div className="mt-4 grid gap-4 sm:grid-cols-2">
               <label className="block text-sm font-medium sm:col-span-2">
@@ -223,6 +300,7 @@ export default function GaOutdoorPage() {
                 <select
                   className="input mt-1"
                   required
+                  disabled={Boolean(editing)}
                   value={form.areaId}
                   onChange={(event) =>
                     setForm({ ...form, areaId: event.target.value })
@@ -266,6 +344,18 @@ export default function GaOutdoorPage() {
                   setForm({ ...form, action: event.target.value })
                 }
                 placeholder="Tulis tindakan yang diperlukan bila ada."
+              />
+            </label>
+            <label className="mt-4 block text-sm font-medium">
+              Foto atau video (maksimal 8 file, 100 MB per file)
+              <input
+                className="input mt-1"
+                type="file"
+                accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"
+                multiple
+                onChange={(event) =>
+                  setFiles(Array.from(event.target.files || []))
+                }
               />
             </label>
             <div className="mt-5 flex justify-end gap-2">

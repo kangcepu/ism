@@ -23,8 +23,11 @@ import {
   MarkerActionsController,
   SwitchRemoteController,
   UnifiController,
+  UniFiLiveService,
 } from "./live-integrations.controller";
+import { CctvModule } from "../cctv/cctv.module";
 @Module({
+  imports: [CctvModule],
   controllers: [
     SettingsController,
     BrandingController,
@@ -45,5 +48,6 @@ import {
     MarkerActionsController,
     SwitchRemoteController,
   ],
+  providers: [UniFiLiveService],
 })
 export class PlatformModule {}

@@ -22,7 +22,10 @@
     "pm2:list": "pm2 list",
     "migrate:legacy": "node scripts/legacy-migrate.cjs",
     "migrate:legacy-network": "node scripts/legacy-network-migrate.cjs",
-    "test:inventory": "npm run build -w @ism/api && node scripts/test-inventory-integration.cjs"
+    "migrate:legacy-operational": "node scripts/legacy-operational-migrate.cjs",
+    "test:inventory": "npm run build -w @ism/api && node scripts/test-inventory-integration.cjs",
+    "db:seed:ga": "node scripts/run-api-task.cjs prisma:seed",
+    "migrate:legacy:unifi": "node scripts/migrate-legacy-unifi.cjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

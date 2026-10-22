@@ -30,3 +30,10 @@ export class OutdoorDto {
   @IsString() cleanliness!: string;
   @IsOptional() @IsString() action?: string | null;
 }
+
+export class OutdoorResultDto {
+  @IsString() plantCondition!: string;
+  @IsString() drainCondition!: string;
+  @IsString() cleanliness!: string;
+  @IsOptional() @IsString() action?: string | null;
+}

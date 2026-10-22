@@ -1,4 +1,5 @@
 import { Module } from "@nestjs/common";
+import { GaTicketsController } from "./ga-tickets.controller";
 import { DashboardController } from "./dashboard.controller";
 import {
   MobileMonitoringController,
@@ -15,6 +16,7 @@ import { MonitoringPollerService } from "./monitoring-poller.service";
     MonitoringController,
     MobileMonitoringController,
     SupportReportsController,
+    GaTicketsController,
     InventoryReportsController,
     NotificationsController,
   ],

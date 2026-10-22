@@ -88,6 +88,20 @@ export function svgMetadata(buffer: Buffer) {
 @FloorView()
 @Controller("floor-map/backgrounds")
 export class FloorBackgroundsController {
+  @Get("reference/vsd") async reference(@Res() response: Response) {
+    const path = join(root, "backround.vsd");
+    const stat = await fs.stat(path).catch(() => {
+      throw new NotFoundException("File referensi Visio tidak ditemukan.");
+    });
+    response.set({
+      "Content-Type": "application/vnd.visio",
+      "Content-Disposition": 'inline; filename="background.vsd"',
+      "Content-Length": stat.size,
+      "Cache-Control": "private, no-cache",
+      "X-Content-Type-Options": "nosniff",
+    });
+    createReadStream(path).on("error", () => response.destroy()).pipe(response);
+  }
   @Get() async list() {
     const names = await fs.readdir(root).catch((error) => {
       if (error.code === "ENOENT") return [] as string[];

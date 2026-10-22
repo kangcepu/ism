@@ -12,6 +12,7 @@ import { Actor } from "../../common/auth.decorators";
 import type { RequestUser } from "../../common/request-user";
 import { PrismaService } from "../../database/prisma.service";
 import { AngleDto, FindingDto, ReconciliationDto } from "./ga-control.dto";
+import { z } from "zod";
 const access = (a: RequestUser) => a.role === "admin" || a.gaRole !== "none";
 const supervisor = (a: RequestUser) =>
   a.role === "admin" || a.gaRole === "supervisor";
@@ -42,6 +43,22 @@ export class GaControlController {
     @Param("action") action: string,
   ) {
     if (!supervisor(a)) throw new ForbiddenException();
+    const item = await this.db.gaCctvAngleInspection.findUniqueOrThrow({
+      where: { id },
+    });
+    const allowed: Record<string, string[]> = {
+      match: ["INSPECTED", "RECHECK"],
+      gap: ["INSPECTED", "RECHECK"],
+      it: ["GAP_FOUND"],
+      recheck: ["IT_ACTION"],
+      close: ["MATCH"],
+    };
+    if (!allowed[action]?.includes(item.status))
+      throw new ConflictException("Transisi inspeksi tidak valid.");
+    if (item.inspectorId === a.id && ["match", "gap", "close"].includes(action))
+      throw new ForbiddenException(
+        "Pemeriksa tidak dapat memverifikasi inspeksinya sendiri.",
+      );
     const status = (
       {
         match: "MATCH",
@@ -53,7 +70,7 @@ export class GaControlController {
     )[action];
     if (!status) throw new ConflictException("Aksi tidak valid.");
     return this.db.gaCctvAngleInspection.update({
-      where: { id },
+      where: { id, status: item.status },
       data: {
         status: status as never,
         reviewerId: a.id,
@@ -93,15 +110,48 @@ export class GaControlController {
     @Param("id", ParseIntPipe) id: number,
   ) {
     if (!supervisor(a)) throw new ForbiddenException();
-    return this.db.gaWeighbridgeReconciliation.update({
+    const item = await this.db.gaWeighbridgeReconciliation.findUniqueOrThrow({
       where: { id },
+    });
+    if (item.checkerId === a.id)
+      throw new ForbiddenException(
+        "Petugas tidak dapat memverifikasi rekonsiliasinya sendiri.",
+      );
+    if (!["MATCH", "RESOLVED"].includes(item.status))
+      throw new ConflictException(
+        "Selisih harus diselesaikan sebelum diverifikasi.",
+      );
+    return this.db.gaWeighbridgeReconciliation.update({
+      where: { id, status: item.status },
       data: { status: "VERIFIED", verifiedById: a.id, verifiedAt: new Date() },
+    });
+  }
+  @Post("reconciliations/:id/resolve") async resolveReconciliation(
+    @Actor() a: RequestUser,
+    @Param("id", ParseIntPipe) id: number,
+    @Body() body: unknown,
+  ) {
+    if (!supervisor(a)) throw new ForbiddenException();
+    const parsed = z
+      .object({ reason: z.string().trim().min(1).max(2000) })
+      .strict()
+      .safeParse(body);
+    if (!parsed.success)
+      throw new ConflictException("Alasan penyelesaian selisih wajib diisi.");
+    const item = await this.db.gaWeighbridgeReconciliation.findUniqueOrThrow({
+      where: { id },
+    });
+    if (item.status !== "DISCREPANCY")
+      throw new ConflictException("Tidak ada selisih yang perlu diselesaikan.");
+    return this.db.gaWeighbridgeReconciliation.update({
+      where: { id, status: "DISCREPANCY" },
+      data: { status: "RESOLVED", discrepancyReason: parsed.data.reason },
     });
   }
   @Get("findings") async findings(@Actor() a: RequestUser) {
     if (!access(a)) throw new ForbiddenException();
     return this.db.gaFinding.findMany({
-      include: { area: { select: { code: true, name: true } } },
+      include: { area: { select: { code: true, name: true } }, itTicket: true },
       orderBy: { createdAt: "desc" },
     });
   }
@@ -124,12 +174,70 @@ export class GaControlController {
       },
     });
   }
+  @Post("findings/:id/ticket") async ticket(
+    @Actor() a: RequestUser,
+    @Param("id", ParseIntPipe) id: number,
+  ) {
+    if (!access(a)) throw new ForbiddenException();
+    return this.db.$transaction(async (tx) => {
+      const finding = await tx.gaFinding.findUniqueOrThrow({
+        where: { id },
+        include: { itTicket: true },
+      });
+      if (finding.itTicket) return finding.itTicket;
+      if (finding.status === "CLOSED")
+        throw new ConflictException("Temuan sudah ditutup.");
+      const sequence = await tx.codeSequence.upsert({
+        where: { scope: "ga-it-ticket" },
+        create: { scope: "ga-it-ticket", value: 1 },
+        update: { value: { increment: 1 } },
+      });
+      return tx.gaItTicket.create({
+        data: {
+          code: `GIT-${String(sequence.value).padStart(5, "0")}`,
+          findingId: id,
+          createdById: a.id,
+        },
+      });
+    });
+  }
   @Post("findings/:id/:action") async findingAction(
     @Actor() a: RequestUser,
     @Param("id", ParseIntPipe) id: number,
     @Param("action") action: string,
   ) {
     if (!access(a)) throw new ForbiddenException();
+    const item = await this.db.gaFinding.findUniqueOrThrow({
+      where: { id },
+      include: { itTicket: true },
+    });
+    const allowed: Record<string, string[]> = {
+      start: ["OPEN"],
+      escalate: ["OPEN", "IN_PROGRESS"],
+      resolve: ["IN_PROGRESS", "ESCALATED"],
+      close: ["RESOLVED"],
+    };
+    if (!allowed[action]?.includes(item.status))
+      throw new ConflictException("Transisi temuan tidak valid.");
+    if (action === "close" && !supervisor(a))
+      throw new ForbiddenException("Supervisor GA diperlukan.");
+    if (
+      action === "close" &&
+      (item.createdById === a.id ||
+        item.assigneeId === a.id ||
+        item.resolvedById === a.id)
+    )
+      throw new ForbiddenException(
+        "Pembuat atau petugas tidak dapat memverifikasi temuannya sendiri.",
+      );
+    if (
+      ["resolve", "close"].includes(action) &&
+      item.itTicket &&
+      item.itTicket.status !== "RESOLVED"
+    )
+      throw new ConflictException(
+        "Tiket IT harus diselesaikan sebelum temuan ditutup.",
+      );
     const status = (
       {
         start: "IN_PROGRESS",
@@ -140,9 +248,10 @@ export class GaControlController {
     )[action];
     if (!status) throw new ConflictException("Aksi tidak valid.");
     return this.db.gaFinding.update({
-      where: { id },
+      where: { id, status: item.status },
       data: {
         status: status as never,
+        ...(action === "resolve" ? { resolvedById: a.id } : {}),
         ...(action === "close"
           ? { verifiedById: a.id, verifiedAt: new Date() }
           : {}),

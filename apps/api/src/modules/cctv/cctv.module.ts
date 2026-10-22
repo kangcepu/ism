@@ -5,5 +5,6 @@ import { CctvLiveController, CctvLiveService } from "./cctv-live.controller";
 @Module({
   controllers: [CctvController, CctvEvidenceController, CctvLiveController],
   providers: [CctvLiveService],
+  exports: [CctvLiveService],
 })
 export class CctvModule {}

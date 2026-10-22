@@ -40,6 +40,7 @@ enum GaWorkStatus {
   VERIFIED
   REWORK
   OVERDUE
+  CANCELLED
 }
 
 enum GaPlanStatus {
@@ -756,6 +757,7 @@ model GaArea {
   updatedAt              DateTime                @updatedAt
   history                GaAreaHistory[]
   cleaningChecklists     GaCleaningChecklist[]
+  cleaningTemplates      GaCleaningTemplate[]
   outdoorInspections     GaOutdoorInspection[]
   gaPreventivePlans      GaPreventivePlan[]
   gaPreventiveJobs       GaPreventiveJob[]
@@ -790,14 +792,37 @@ model GaCleaningChecklist {
   status       GaWorkStatus     @default(DRAFT)
   note         String?
   submittedAt  DateTime?
+  submittedById Int?
+  templateId   Int?
+  template     GaCleaningTemplate? @relation(fields: [templateId], references: [id])
   verifiedById Int?
   verifiedAt   DateTime?
   lines        GaCleaningLine[]
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
 
-  @@unique([areaId, workDate])
+  @@unique([areaId, workDate, assigneeId])
   @@index([workDate, status])
+}
+
+model GaCleaningTemplate {
+  id Int @id @default(autoincrement())
+  name String
+  areaId Int
+  area GaArea @relation(fields: [areaId], references: [id])
+  assigneeId Int
+  tasks String[]
+  weekdays Int[]
+  startDate DateTime @db.Date
+  endDate DateTime? @db.Date
+  generatedThrough DateTime? @db.Date
+  active Boolean @default(true)
+  createdById Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  checklists GaCleaningChecklist[]
+
+  @@index([active, startDate, endDate])
 }
 
 model GaCleaningLine {
@@ -807,6 +832,7 @@ model GaCleaningLine {
   task        String
   completed   Boolean             @default(false)
   completedAt DateTime?
+  completedById Int?
   note        String?
   sortOrder   Int                 @default(0)
 }
@@ -823,6 +849,7 @@ model GaOutdoorInspection {
   action         String?
   status         GaWorkStatus     @default(DRAFT)
   submittedAt    DateTime?
+  submittedById  Int?
   verifiedById   Int?
   verifiedAt     DateTime?
   createdAt      DateTime         @default(now())
@@ -877,6 +904,7 @@ model GaPreventiveJob {
   beforePhoto  String?
   afterPhoto   String?
   submittedAt  DateTime?
+  submittedById Int?
   verifiedById Int?
   verifiedAt   DateTime?
   reworkReason String?
@@ -991,12 +1019,45 @@ model GaFinding {
   evidence         String?
   escalatedTicket  String?
   verifiedById     Int?
+  resolvedById     Int?
   verifiedAt       DateTime?
   createdById      Int
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
+  itTicket         GaItTicket?
 
   @@index([status, dueDate])
+}
+
+model GaItTicket {
+  id Int @id @default(autoincrement())
+  code String @unique
+  findingId Int @unique
+  finding GaFinding @relation(fields: [findingId], references: [id])
+  status String @default("OPEN")
+  resolution String?
+  resolvedById Int?
+  resolvedAt DateTime?
+  createdById Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model GaReport {
+  id Int @id @default(autoincrement())
+  code String @unique
+  periodStart DateTime @db.Date
+  periodEnd DateTime @db.Date
+  status String @default("DRAFT")
+  snapshot Json
+  createdById Int
+  reviewedById Int?
+  reviewedAt DateTime?
+  publishedById Int?
+  publishedAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([periodStart, periodEnd])
 }
 
 model GaOutdoorMedia {

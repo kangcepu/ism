@@ -40,7 +40,33 @@ type Coverage = {
   fieldOfView: number;
   coverageArea: string | null;
 };
+type MarkerLive = {
+  status: "online" | "offline" | "degraded" | "unknown";
+  source: "BLUE_IRIS" | "UNIFI" | "SNMP";
+  checkedAt: string | null;
+  message: string;
+  recording?: boolean | null;
+  fps?: number | null;
+  clients?: number | null;
+  latencyMs?: number | null;
+  temperature?: number | null;
+  trafficInBps?: number | null;
+  trafficOutBps?: number | null;
+  ports?: number;
+  openPorts?: string | null;
+};
+type LiveState = { updatedAt: string; markers: Record<string, MarkerLive> };
 const markerId = () => crypto.randomUUID();
+const formatRate = (value: number) => {
+  const units = ["bps", "Kbps", "Mbps", "Gbps"];
+  let amount = value;
+  let index = 0;
+  while (amount >= 1000 && index < units.length - 1) {
+    amount /= 1000;
+    index += 1;
+  }
+  return `${amount >= 100 ? amount.toFixed(0) : amount.toFixed(1)} ${units[index]}`;
+};
 
 export default function FloorMapPage() {
   const [state, setState] = useState<State | null>(null);
@@ -71,6 +97,10 @@ export default function FloorMapPage() {
   const [focus, setFocus] = useState<{ id: string; request: number } | null>(
     null,
   );
+  const [hiddenKinds, setHiddenKinds] = useState<string[]>([]);
+  const [hiddenCableTypes, setHiddenCableTypes] = useState<string[]>([]);
+  const [live, setLive] = useState<LiveState | null>(null);
+  const [panel, setPanel] = useState<"dashboard" | "details" | "layers" | "search" | "cables">("dashboard");
   useEffect(() => {
     api<{ state: State; canEdit: boolean }>("/floor-map/editor")
       .then((value) => {
@@ -104,6 +134,19 @@ export default function FloorMapPage() {
     api<Coverage[]>("/floor-map/cctv-coverage")
       .then(setCoverage)
       .catch(() => undefined);
+  }, []);
+  useEffect(() => {
+    let active = true;
+    const load = () =>
+      api<LiveState>("/floor-map/markers/live")
+        .then((value) => active && setLive(value))
+        .catch(() => undefined);
+    load();
+    const timer = window.setInterval(load, 15000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
   }, []);
   async function uploadIcon(file: File) {
     setBusy(true);
@@ -164,6 +207,32 @@ export default function FloorMapPage() {
     [state, page],
   );
   const marker = markers.find((item) => String(item.id) === selected);
+  const markerKinds = useMemo(
+    () => [...new Set(markers.map((item) => String(item.kind || "other").toLowerCase()))].sort(),
+    [markers],
+  );
+  const cableTypes = useMemo(
+    () => [...new Set(cables.map((item) => String(item.type || "lan").toLowerCase()))].sort(),
+    [cables],
+  );
+  const visibleMarkers = markers.filter(
+    (item) => !hiddenKinds.includes(String(item.kind || "other").toLowerCase()),
+  );
+  const visibleCables = cables.filter(
+    (item) => !hiddenCableTypes.includes(String(item.type || "lan").toLowerCase()),
+  );
+  const selectedLive = selected ? live?.markers[selected] : null;
+  const dashboard = useMemo(() => {
+    const count = (kind: string, status?: string) =>
+      markers.filter((item) => String(item.kind || "").toLowerCase().includes(kind) && (!status || live?.markers[String(item.id)]?.status === status)).length;
+    return {
+      cctv: count("cctv"), cctvOnline: count("cctv", "online"), cctvCheck: count("cctv", "unknown") + count("cctv", "degraded"),
+      apOnline: count("ap", "online"), apOffline: count("ap", "offline"),
+      switches: markers.filter((item) => ["switch", "router"].some((kind) => String(item.kind || "").toLowerCase().includes(kind))).length,
+      switchOnline: markers.filter((item) => ["switch", "router"].some((kind) => String(item.kind || "").toLowerCase().includes(kind)) && live?.markers[String(item.id)]?.status === "online").length,
+      switchOffline: markers.filter((item) => ["switch", "router"].some((kind) => String(item.kind || "").toLowerCase().includes(kind)) && live?.markers[String(item.id)]?.status === "offline").length,
+    };
+  }, [markers, live]);
   const background = backgrounds.find((item) => item.page === page);
   const legacyRatio = background
     ? background.width / background.height
@@ -252,15 +321,38 @@ export default function FloorMapPage() {
   }
   function addCable() {
     if (!state || !cableFrom || !cableTo || cableFrom === cableTo) return;
+    const from = markers.find((item) => String(item.id) === cableFrom);
+    const to = markers.find((item) => String(item.id) === cableTo);
+    if (!from || !to) return;
     change({
       ...state,
       cables: [
         ...(state.cables || []),
-        { id: markerId(), from: cableFrom, to: cableTo, page },
+        { id: markerId(), from: cableFrom, to: cableTo, page, type: "lan", color: "#2563eb", label: "LAN", labelColor: "#2563eb", labelSize: 2.4, points: [{ x: Number(from.x || 0), y: Number(from.y || 0) }, { x: Number(to.x || 0), y: Number(to.y || 0) }], connections: { start: { markerId: cableFrom }, end: { markerId: cableTo } } },
       ],
     });
     setCableFrom("");
     setCableTo("");
+  }
+  function updateCable(id: string, patch: Partial<Cable>) {
+    if (!state) return;
+    change({ ...state, cables: (state.cables || []).map((item) => String(item.id) === id ? { ...item, ...patch } : item) });
+  }
+  function addBend(cable: Cable) {
+    const points = resolvedPoints(cable);
+    if (points.length < 2) return;
+    const index = Math.floor((points.length - 1) / 2);
+    const a = points[index]; const b = points[index + 1];
+    updateCable(String(cable.id), { points: [...points.slice(0, index + 1), { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, ...points.slice(index + 1)] });
+  }
+  function snapCable(cable: Cable) {
+    const from = markers.find((item) => String(item.id) === String(endpoint(cable, "start")));
+    const to = markers.find((item) => String(item.id) === String(endpoint(cable, "end")));
+    if (!from || !to) return;
+    const points = resolvedPoints(cable);
+    points[0] = { x: Number(from.x || 0), y: Number(from.y || 0) };
+    points[points.length - 1] = { x: Number(to.x || 0), y: Number(to.y || 0) };
+    updateCable(String(cable.id), { points, connections: { start: { markerId: String(from.id) }, end: { markerId: String(to.id) } } });
   }
   async function save() {
     if (!state) return;
@@ -432,17 +524,26 @@ export default function FloorMapPage() {
         <section className="min-w-0">
           <MapCanvas
             background={background}
-            markers={markers.map((item) => ({
+            markers={visibleMarkers.map((item) => ({
               id: String(item.id),
               name: String(item.name || item.kind || "Marker"),
               kind: String(item.kind || "other"),
+              scale: Number(item.scale || 1),
+              color: typeof item.color === "string" ? item.color : undefined,
+              strokeColor: typeof item.strokeColor === "string" ? item.strokeColor : undefined,
+              labelColor: typeof item.textColor === "string" ? item.textColor : undefined,
+              labelSize: typeof item.labelSize === "number" ? item.labelSize : undefined,
+              ip: typeof item.ip === "string" ? item.ip : undefined,
+              mac: typeof item.apMac === "string" && item.apMac ? item.apMac : undefined,
+              notes: typeof item.notes === "string" ? item.notes : undefined,
               iconUrl: item.customIconUrl
                 ? `${API}/floor-map/icons/${String(item.customIconUrl).split("/").pop()}`
                 : undefined,
               x: percent(item.x, "x"),
               y: percent(item.y, "y"),
+              live: live?.markers[String(item.id)],
             }))}
-            cables={cables.map((cable) => {
+            cables={visibleCables.map((cable) => {
               const from = markers.find(
                 (item) => String(item.id) === String(endpoint(cable, "start")),
               );
@@ -463,6 +564,15 @@ export default function FloorMapPage() {
                 id: String(cable.id),
                 color:
                   typeof cable.color === "string" ? cable.color : "#2563eb",
+                label: typeof cable.label === "string" ? cable.label : "",
+                labelColor:
+                  typeof cable.labelColor === "string"
+                    ? cable.labelColor
+                    : undefined,
+                labelSize:
+                  typeof cable.labelSize === "number"
+                    ? cable.labelSize
+                    : undefined,
                 points: resolved.map((point) => ({
                   x: percent(point.x, "x"),
                   y: percent(point.y, "y"),
@@ -490,6 +600,7 @@ export default function FloorMapPage() {
             onSelect={(id) => {
               setSelected(id);
               setMoving(false);
+              setPanel("details");
             }}
             moving={moving}
             onMove={(x, y) => {
@@ -508,8 +619,84 @@ export default function FloorMapPage() {
               </p>
             )}
         </section>
-        <aside className="space-y-4">
-          <section className="card p-4">
+        <aside className="space-y-4 xl:sticky xl:top-4 xl:max-h-[calc(100vh-7rem)] xl:overflow-y-auto xl:pr-1">
+          <nav aria-label="Panel denah" className="grid grid-cols-5 gap-1 rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
+            {[
+              ["dashboard", "Ringkas"],
+              ["details", "Detail"],
+              ["layers", "Layer"],
+              ["search", "Cari"],
+              ["cables", "Kabel"],
+            ].map(([id, label]) => (
+              <button key={id} type="button" onClick={() => setPanel(id as typeof panel)} className={`rounded-lg px-2 py-2 text-xs font-semibold ${panel === id ? "bg-blue-600 text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+                {label}
+              </button>
+            ))}
+          </nav>
+          {panel === "dashboard" && <section className="card p-4">
+            <h2 className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-600">Dashboard</h2>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              {[
+                ["Total CCTV", dashboard.cctv, "text-slate-900"], ["CCTV hidup", dashboard.cctvOnline, "text-emerald-600"],
+                ["CCTV perlu cek", dashboard.cctvCheck, "text-amber-600"], ["AP online", dashboard.apOnline, "text-emerald-600"],
+                ["AP offline", dashboard.apOffline, "text-rose-600"], ["Total switch", dashboard.switches, "text-amber-600"],
+                ["Switch online", dashboard.switchOnline, "text-emerald-600"], ["Switch offline", dashboard.switchOffline, "text-rose-600"],
+              ].map(([label, value, color]) => <div key={String(label)} className="rounded-lg border border-slate-200 px-3 py-2.5"><p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{label}</p><p className={`mt-1 text-xl font-semibold ${color}`}>{value}</p></div>)}
+            </div>
+            <div className="mt-4 border-t border-slate-200 pt-4">
+              <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-600">Properti objek</h3>
+              {marker ? <div className="mt-3 rounded-lg border border-slate-200 p-3 text-sm text-slate-700"><p className="font-semibold text-slate-900">{String(marker.name || marker.kind || "Marker")}</p><p className="mt-1 capitalize">{String(marker.kind || "other")}</p>{typeof marker.ip === "string" && marker.ip && <p className="mt-1">IP: {marker.ip}</p>}<button type="button" className="mt-3 text-xs font-semibold text-blue-700" onClick={() => setPanel("details")}>Buka detail objek</button></div> : <p className="mt-3 rounded-lg border border-slate-200 p-3 text-sm leading-5 text-slate-600">Klik CCTV, switch, atau kabel pada denah untuk membuka properti dan status perangkat.</p>}
+            </div>
+            <div className="mt-4 border-t border-slate-200 pt-4">
+              <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-600">File referensi</h3>
+              <a className="btn-secondary mt-3 inline-flex" href={`${API}/floor-map/backgrounds/reference/vsd`} target="_blank" rel="noreferrer">Buka background.vsd</a>
+              <p className="mt-2 text-xs text-slate-500">File Visio asli tetap tersedia sebagai referensi; denah operasional memakai versi vektor native.</p>
+            </div>
+          </section>}
+          {panel === "layers" && <section className="card p-4">
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="font-semibold">Layer denah</h2>
+              <button type="button" className="text-xs font-medium text-blue-700" onClick={() => { setHiddenKinds([]); setHiddenCableTypes([]); }}>
+                Tampilkan semua
+              </button>
+            </div>
+            <div className="mt-3 space-y-2">
+              <p className="text-xs font-medium text-slate-500">Marker</p>
+              {markerKinds.map((kind) => (
+                <label key={kind} className="flex items-center justify-between gap-3 text-sm text-slate-700">
+                  <span className="capitalize">{kind}</span>
+                  <input type="checkbox" checked={!hiddenKinds.includes(kind)} onChange={() => setHiddenKinds((current) => current.includes(kind) ? current.filter((value) => value !== kind) : [...current, kind])} />
+                </label>
+              ))}
+              <p className="pt-2 text-xs font-medium text-slate-500">Kabel</p>
+              {cableTypes.map((type) => (
+                <label key={type} className="flex items-center justify-between gap-3 text-sm text-slate-700">
+                  <span className="uppercase">{type}</span>
+                  <input type="checkbox" checked={!hiddenCableTypes.includes(type)} onChange={() => setHiddenCableTypes((current) => current.includes(type) ? current.filter((value) => value !== type) : [...current, type])} />
+                </label>
+              ))}
+            </div>
+          </section>}
+          {panel === "details" && marker && (
+            <section className="card p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div><h2 className="font-semibold">Status perangkat</h2><p className="mt-1 text-xs text-slate-500">{selectedLive?.source || "DATA MAP"} · {selectedLive?.checkedAt ? new Date(selectedLive.checkedAt).toLocaleTimeString("id-ID") : "Belum diperiksa"}</p></div>
+                <span className={`rounded-full px-2 py-1 text-xs font-semibold ${selectedLive?.status === "online" ? "bg-emerald-50 text-emerald-700" : selectedLive?.status === "offline" ? "bg-rose-50 text-rose-700" : selectedLive?.status === "degraded" ? "bg-amber-50 text-amber-700" : "bg-slate-100 text-slate-600"}`}>{selectedLive?.status || "unknown"}</span>
+              </div>
+              <p className="mt-3 text-sm text-slate-600">{selectedLive?.message || "Status akan diperbarui otomatis."}</p>
+              <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+                {selectedLive?.latencyMs != null && <><dt className="text-slate-500">Latency</dt><dd className="text-right font-semibold">{selectedLive.latencyMs} ms</dd></>}
+                {selectedLive?.temperature != null && <><dt className="text-slate-500">Suhu chassis</dt><dd className="text-right font-semibold">{selectedLive.temperature} °C</dd></>}
+                {selectedLive?.trafficInBps != null && <><dt className="text-slate-500">Traffic masuk</dt><dd className="text-right font-semibold">{formatRate(selectedLive.trafficInBps)}</dd></>}
+                {selectedLive?.trafficOutBps != null && <><dt className="text-slate-500">Traffic keluar</dt><dd className="text-right font-semibold">{formatRate(selectedLive.trafficOutBps)}</dd></>}
+                {selectedLive?.ports != null && <><dt className="text-slate-500">Port terbaca</dt><dd className="text-right font-semibold">{selectedLive.ports}</dd></>}
+                {selectedLive?.clients != null && <><dt className="text-slate-500">Klien AP</dt><dd className="text-right font-semibold">{selectedLive.clients}</dd></>}
+                {selectedLive?.fps != null && <><dt className="text-slate-500">FPS kamera</dt><dd className="text-right font-semibold">{selectedLive.fps}</dd></>}
+                {selectedLive?.recording != null && <><dt className="text-slate-500">Rekaman</dt><dd className="text-right font-semibold">{selectedLive.recording ? "Aktif" : "Tidak aktif"}</dd></>}
+              </dl>
+            </section>
+          )}
+          {panel === "details" && <section className="card p-4">
             <h2 className="font-semibold">Marker</h2>
             {marker ? (
               <fieldset disabled={!canEdit} className="mt-4 space-y-3">
@@ -577,6 +764,13 @@ export default function FloorMapPage() {
                   </datalist>
                 </label>
                 <div className="grid grid-cols-2 gap-3">
+                  <label><span className="label">Skala marker</span><input className="input" type="number" min="0.5" max="3" step="0.1" value={Number(marker.scale || 1)} onChange={(e) => updateMarker({ scale: Number(e.target.value) })} /></label>
+                  <label><span className="label">Ukuran label</span><input className="input" type="number" min="8" max="32" value={Number(marker.labelSize || 10)} onChange={(e) => updateMarker({ labelSize: Number(e.target.value) })} /></label>
+                  <label><span className="label">Warna marker</span><input className="input h-10 p-1" type="color" value={String(marker.color || "#2563eb")} onChange={(e) => updateMarker({ color: e.target.value })} /></label>
+                  <label><span className="label">Warna stroke</span><input className="input h-10 p-1" type="color" value={String(marker.strokeColor || "#ffffff")} onChange={(e) => updateMarker({ strokeColor: e.target.value })} /></label>
+                  <label><span className="label">Warna label</span><input className="input h-10 p-1" type="color" value={String(marker.textColor || "#334155")} onChange={(e) => updateMarker({ textColor: e.target.value })} /></label>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
                   {(["x", "y"] as const).map((key) => (
                     <label key={key}>
                       <span className="label">{key.toUpperCase()} (%)</span>
@@ -621,8 +815,8 @@ export default function FloorMapPage() {
                 Pilih marker untuk mengedit.
               </p>
             )}
-          </section>
-          <section className="card p-4">
+          </section>}
+          {panel === "search" && <section className="card p-4">
             <h2 className="font-semibold">
               Cari marker{" "}
               <span className="text-sm font-normal text-slate-400">
@@ -651,6 +845,7 @@ export default function FloorMapPage() {
                       setSelected(String(item.id));
                       setFocus({ id: String(item.id), request: Date.now() });
                       setMoving(false);
+                      setPanel("details");
                     }}
                     className={`block w-full rounded-lg px-2 py-2 text-left text-xs ${selected === String(item.id) ? "bg-blue-50 font-semibold text-blue-700" : "text-slate-600 hover:bg-slate-50"}`}
                   >
@@ -658,8 +853,8 @@ export default function FloorMapPage() {
                   </button>
                 ))}
             </div>
-          </section>
-          <section className="card p-4">
+          </section>}
+          {panel === "cables" && <section className="card p-4">
             <h2 className="font-semibold">Kabel</h2>
             <fieldset disabled={!canEdit} className="mt-3 space-y-3">
               {[
@@ -694,9 +889,9 @@ export default function FloorMapPage() {
               {cables.map((cable) => (
                 <div
                   key={String(cable.id)}
-                  className="flex items-center gap-2 border-t pt-2 text-xs"
+                  className="space-y-2 border-t pt-2 text-xs"
                 >
-                  <span className="min-w-0 flex-1 truncate">
+                  <span className="block truncate">
                     {String(
                       markers.find(
                         (item) =>
@@ -715,9 +910,16 @@ export default function FloorMapPage() {
                         "Titik",
                     )}
                   </span>
-                  <button
-                    className="text-rose-700"
-                    onClick={() => {
+                  <div className="grid grid-cols-2 gap-2">
+                    <label><span className="label">Tipe kabel</span><select className="input" value={String(cable.type || "lan")} onChange={(e) => { const type = e.target.value; const colors: Record<string, string> = { lan: "#2563eb", fo: "#16a34a", power: "#dc2626", "current-large": "#ea580c", "current-small": "#a855f7" }; updateCable(String(cable.id), { type, color: colors[type], label: String(cable.label || type.toUpperCase()), labelColor: colors[type] }); }}><option value="lan">LAN</option><option value="fo">Fiber Optic</option><option value="power">Power</option><option value="current-large">Arus besar</option><option value="current-small">Arus kecil</option></select></label>
+                    <label><span className="label">Label</span><input className="input" value={String(cable.label || "")} onChange={(e) => updateCable(String(cable.id), { label: e.target.value })} /></label>
+                    <label><span className="label">Warna label</span><input className="input h-10 p-1" type="color" value={String(cable.labelColor || cable.color || "#2563eb")} onChange={(e) => updateCable(String(cable.id), { labelColor: e.target.value })} /></label>
+                    <label><span className="label">Ukuran label</span><input className="input" type="number" min="1" max="8" step="0.1" value={Number(cable.labelSize || 2.4)} onChange={(e) => updateCable(String(cable.id), { labelSize: Number(e.target.value) })} /></label>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button className="btn-secondary" onClick={() => addBend(cable)}>Tambah titik belok</button>
+                    <button className="btn-secondary" onClick={() => snapCable(cable)}>Snap ke marker</button>
+                    <button className="text-rose-700" onClick={() => {
                       if (window.confirm("Hapus kabel ini?"))
                         change({
                           ...state,
@@ -725,14 +927,15 @@ export default function FloorMapPage() {
                             (item) => item !== cable,
                           ),
                         });
-                    }}
-                  >
-                    Hapus
-                  </button>
+                    }}>Hapus</button>
+                  </div>
+                  <div className="space-y-1 rounded-lg bg-slate-50 p-2">
+                    {resolvedPoints(cable).map((point, index) => <div key={index} className="grid grid-cols-[auto_1fr_1fr] items-center gap-2"><span>Titik {index + 1}</span><input className="input py-1" type="number" value={Number(point.x.toFixed(2))} onChange={(e) => { const points = resolvedPoints(cable); points[index] = { ...point, x: Number(e.target.value) }; updateCable(String(cable.id), { points }); }} /><input className="input py-1" type="number" value={Number(point.y.toFixed(2))} onChange={(e) => { const points = resolvedPoints(cable); points[index] = { ...point, y: Number(e.target.value) }; updateCable(String(cable.id), { points }); }} /></div>)}
+                  </div>
                 </div>
               ))}
             </fieldset>
-          </section>
+          </section>}
         </aside>
       </div>
     </>

@@ -23,7 +23,12 @@ import { diskStorage } from "multer";
 import { Actor } from "../../common/auth.decorators";
 import type { RequestUser } from "../../common/request-user";
 import { PrismaService } from "../../database/prisma.service";
-import { CleaningDto, CleaningLineDto, OutdoorDto } from "./ga-operations.dto";
+import {
+  CleaningDto,
+  CleaningLineDto,
+  OutdoorDto,
+  OutdoorResultDto,
+} from "./ga-operations.dto";
 
 const canAccess = (actor: RequestUser) =>
   actor.role === "admin" || actor.gaRole !== "none";
@@ -69,16 +74,18 @@ export class GaOperationsController {
   async createCleaning(@Actor() actor: RequestUser, @Body() dto: CleaningDto) {
     if (!canAccess(actor)) throw new ForbiddenException("Akses GA diperlukan.");
     const date = workDate(dto.workDate);
-    const exists = await this.db.gaCleaningChecklist.findUnique({
-      where: { areaId_workDate: { areaId: dto.areaId, workDate: date } },
-    });
-    if (exists)
-      throw new ConflictException(
-        "Checklist area pada tanggal tersebut sudah ada.",
-      );
     const assigneeId = canSupervise(actor)
       ? (dto.assigneeId ?? actor.id)
       : actor.id;
+    const exists = await this.db.gaCleaningChecklist.findFirst({
+      where: { areaId: dto.areaId, workDate: date, assigneeId },
+    });
+    if (exists)
+      throw new ConflictException(
+        "Checklist area dan petugas pada tanggal tersebut sudah ada.",
+      );
+    if (!dto.tasks.some((task) => task.trim()))
+      throw new ConflictException("Minimal satu tugas wajib diisi.");
     return this.db.gaCleaningChecklist.create({
       data: {
         areaId: dto.areaId,
@@ -117,6 +124,7 @@ export class GaOperationsController {
       data: {
         completed: dto.completed,
         completedAt: dto.completed ? new Date() : null,
+        completedById: dto.completed ? actor.id : null,
         note: dto.note,
       },
     });
@@ -136,14 +144,19 @@ export class GaOperationsController {
       throw new ForbiddenException("Checklist ini bukan penugasan Anda.");
     }
     if (
+      !["DRAFT", "REWORK", "OVERDUE"].includes(checklist.status) ||
       !checklist.lines.length ||
       checklist.lines.some((line) => !line.completed)
     ) {
       throw new ConflictException("Semua tugas harus selesai sebelum dikirim.");
     }
     return this.db.gaCleaningChecklist.update({
-      where: { id },
-      data: { status: "SUBMITTED", submittedAt: new Date() },
+      where: { id, status: checklist.status },
+      data: {
+        status: "SUBMITTED",
+        submittedAt: new Date(),
+        submittedById: actor.id,
+      },
     });
   }
 
@@ -155,8 +168,26 @@ export class GaOperationsController {
   ) {
     if (!canSupervise(actor))
       throw new ForbiddenException("Supervisor GA diperlukan.");
-    return this.db.gaCleaningChecklist.update({
+    if (typeof body?.accepted !== "boolean")
+      throw new ConflictException("Keputusan verifikasi wajib diisi.");
+    const checklist = await this.db.gaCleaningChecklist.findUniqueOrThrow({
       where: { id },
+      include: { lines: true },
+    });
+    if (checklist.status !== "SUBMITTED")
+      throw new ConflictException(
+        "Checklist harus dikirim sebelum diverifikasi.",
+      );
+    if (
+      actor.id === checklist.assigneeId ||
+      actor.id === checklist.submittedById ||
+      checklist.lines.some((line) => line.completedById === actor.id)
+    )
+      throw new ForbiddenException(
+        "Petugas atau pengirim tidak dapat memverifikasi pekerjaannya sendiri.",
+      );
+    return this.db.gaCleaningChecklist.update({
+      where: { id, status: "SUBMITTED" },
       data: body.accepted
         ? { status: "VERIFIED", verifiedById: actor.id, verifiedAt: new Date() }
         : { status: "REWORK", verifiedById: null, verifiedAt: null },
@@ -215,9 +246,39 @@ export class GaOperationsController {
     if (!canSupervise(actor) && inspection.inspectorId !== actor.id) {
       throw new ForbiddenException("Inspeksi ini bukan penugasan Anda.");
     }
+    if (!["DRAFT", "REWORK", "OVERDUE"].includes(inspection.status))
+      throw new ConflictException(
+        "Inspeksi tidak dapat dikirim pada status ini.",
+      );
     return this.db.gaOutdoorInspection.update({
+      where: { id, status: inspection.status },
+      data: {
+        status: "SUBMITTED",
+        submittedAt: new Date(),
+        submittedById: actor.id,
+      },
+    });
+  }
+
+  @Patch("outdoor/:id")
+  async updateOutdoor(
+    @Actor() actor: RequestUser,
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: OutdoorResultDto,
+  ) {
+    if (!canAccess(actor)) throw new ForbiddenException("Akses GA diperlukan.");
+    const inspection = await this.db.gaOutdoorInspection.findUniqueOrThrow({
       where: { id },
-      data: { status: "SUBMITTED", submittedAt: new Date() },
+    });
+    if (!canSupervise(actor) && inspection.inspectorId !== actor.id)
+      throw new ForbiddenException("Inspeksi ini bukan penugasan Anda.");
+    if (!["DRAFT", "REWORK"].includes(inspection.status))
+      throw new ConflictException(
+        "Inspeksi tidak dapat diubah pada status ini.",
+      );
+    return this.db.gaOutdoorInspection.update({
+      where: { id, status: inspection.status },
+      data: dto,
     });
   }
 
@@ -229,8 +290,24 @@ export class GaOperationsController {
   ) {
     if (!canSupervise(actor))
       throw new ForbiddenException("Supervisor GA diperlukan.");
-    return this.db.gaOutdoorInspection.update({
+    if (typeof body?.accepted !== "boolean")
+      throw new ConflictException("Keputusan verifikasi wajib diisi.");
+    const inspection = await this.db.gaOutdoorInspection.findUniqueOrThrow({
       where: { id },
+    });
+    if (inspection.status !== "SUBMITTED")
+      throw new ConflictException(
+        "Inspeksi harus dikirim sebelum diverifikasi.",
+      );
+    if (
+      actor.id === inspection.inspectorId ||
+      actor.id === inspection.submittedById
+    )
+      throw new ForbiddenException(
+        "Petugas atau pengirim tidak dapat memverifikasi pekerjaannya sendiri.",
+      );
+    return this.db.gaOutdoorInspection.update({
+      where: { id, status: "SUBMITTED" },
       data: body.accepted
         ? { status: "VERIFIED", verifiedById: actor.id, verifiedAt: new Date() }
         : { status: "REWORK", verifiedById: null, verifiedAt: null },
@@ -262,31 +339,43 @@ export class GaOperationsController {
     @Param("id", ParseIntPipe) id: number,
     @UploadedFiles() files: Express.Multer.File[] = [],
   ) {
-    if (!canAccess(actor)) throw new ForbiddenException("Akses GA diperlukan.");
-    const inspection = await this.db.gaOutdoorInspection.findUniqueOrThrow({
-      where: { id },
-    });
-    if (!canSupervise(actor) && inspection.inspectorId !== actor.id) {
-      throw new ForbiddenException("Inspeksi ini bukan penugasan Anda.");
-    }
-    if (!files.length) throw new ConflictException("Pilih minimal satu file.");
-    return this.db.$transaction(async (tx) =>
-      Promise.all(
-        files.map((file) =>
-          tx.gaOutdoorMedia.create({
-            data: {
-              inspectionId: id,
-              type: file.mimetype.startsWith("video/") ? "VIDEO" : "PHOTO",
-              internalName: file.filename,
-              originalName: file.originalname,
-              mimeType: file.mimetype,
-              size: file.size,
-              createdById: actor.id,
-            },
-          }),
+    try {
+      if (!canAccess(actor))
+        throw new ForbiddenException("Akses GA diperlukan.");
+      const inspection = await this.db.gaOutdoorInspection.findUniqueOrThrow({
+        where: { id },
+      });
+      if (!canSupervise(actor) && inspection.inspectorId !== actor.id)
+        throw new ForbiddenException("Inspeksi ini bukan penugasan Anda.");
+      if (!["DRAFT", "REWORK"].includes(inspection.status))
+        throw new ConflictException(
+          "Lampiran tidak dapat diubah pada status ini.",
+        );
+      if (!files.length)
+        throw new ConflictException("Pilih minimal satu file.");
+      return await this.db.$transaction(async (tx) =>
+        Promise.all(
+          files.map((file) =>
+            tx.gaOutdoorMedia.create({
+              data: {
+                inspectionId: id,
+                type: file.mimetype.startsWith("video/") ? "VIDEO" : "PHOTO",
+                internalName: file.filename,
+                originalName: file.originalname,
+                mimeType: file.mimetype,
+                size: file.size,
+                createdById: actor.id,
+              },
+            }),
+          ),
         ),
-      ),
-    );
+      );
+    } catch (error) {
+      await Promise.all(
+        files.map((file) => fs.unlink(file.path).catch(() => undefined)),
+      );
+      throw error;
+    }
   }
 
   @Get("outdoor/media/:id/file")

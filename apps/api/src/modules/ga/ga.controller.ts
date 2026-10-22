@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ConflictException,
   ForbiddenException,
   Get,
   Param,
@@ -69,6 +70,8 @@ export class GaAreasController {
   @Post() async create(@Actor() actor: RequestUser, @Body() dto: GaAreaDto) {
     if (!writable(actor))
       throw new ForbiddenException("Supervisor GA diperlukan.");
+    if (dto.status && dto.status !== "DRAFT")
+      throw new ConflictException("Area baru harus dimulai sebagai draft.");
     const { code: _code, ...data } = dto;
     const scope = `ga-area-${data.type}`;
     const sequence = await this.db.codeSequence.upsert({
@@ -105,9 +108,61 @@ export class GaAreasController {
   ) {
     if (!writable(actor))
       throw new ForbiddenException("Supervisor GA diperlukan.");
+    const current = await this.db.gaArea.findUniqueOrThrow({ where: { id } });
     const { code: _code, ...data } = dto;
+    const changed = Object.entries(data).some(
+      ([key, value]) =>
+        key !== "status" &&
+        value !== undefined &&
+        value !== (current as unknown as Record<string, unknown>)[key],
+    );
+    const transitions: Record<string, string[]> = {
+      DRAFT: ["REVIEW"],
+      REVIEW: ["DRAFT", "ACTIVE"],
+      ACTIVE: ["REVISED", "RETIRED"],
+      REVISED: ["REVIEW", "RETIRED"],
+      RETIRED: [],
+    };
+    if (
+      dto.status &&
+      dto.status !== current.status &&
+      !transitions[current.status]?.includes(dto.status)
+    )
+      throw new ConflictException("Transisi status area tidak valid.");
+    if (current.status === "REVIEW" && changed)
+      throw new ConflictException(
+        "Area yang menunggu review tidak dapat diubah. Kembalikan ke draft terlebih dahulu.",
+      );
+    if (current.status === "REVIEW" && (!dto.status || dto.status === "REVIEW"))
+      throw new ConflictException("Area menunggu keputusan review.");
+    if (current.status === "ACTIVE" && dto.status !== "REVISED" && changed)
+      throw new ConflictException(
+        "Ubah status area menjadi revisi sebelum mengubah data.",
+      );
+    if (current.status === "RETIRED" && changed)
+      throw new ConflictException(
+        "Area yang sudah ditutup tidak dapat diubah.",
+      );
+    if (dto.status === "ACTIVE" && current.status === "REVIEW") {
+      const history = await this.db.gaAreaHistory.findMany({
+        where: { areaId: id },
+        orderBy: { createdAt: "desc" },
+        take: 20,
+      });
+      const submission = history.find(
+        (item) =>
+          typeof item.snapshot === "object" &&
+          item.snapshot !== null &&
+          !Array.isArray(item.snapshot) &&
+          item.snapshot.status === "REVIEW",
+      );
+      if (!submission || submission.actorId === actor.id)
+        throw new ForbiddenException(
+          "Pengaju tidak dapat menyetujui area sendiri.",
+        );
+    }
     const area = await this.db.gaArea.update({
-      where: { id },
+      where: { id, status: current.status },
       data,
       include,
     });
